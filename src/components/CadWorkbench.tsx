@@ -57,6 +57,7 @@ import {
   startChatStep,
 } from '../lib/chat-turn';
 import { createSessionScope } from '../lib/session-scope';
+import { acceptArtifactUpdate, type ArtifactUpdateCursor } from '../lib/artifact-updates';
 import { useDismissibleLayer } from '../hooks/useDismissibleLayer';
 import {
   ACCEPTED_IMAGE_TYPES,
@@ -121,6 +122,7 @@ export function CadWorkbench({
     const [storageGroups, setStorageGroups] = useState<StorageSessionGroup[]>([]);
     const [storageLoading, setStorageLoading] = useState(false);
     const sessionScopeRef = useRef(createSessionScope(BUNDLED_POMODORO_SESSION_ID));
+    const turnScopeRef = useRef(createSessionScope(''));
     const abortRef = useRef<AbortController | undefined>(undefined);
     const artifactSnapshotRef = useRef<ArtifactSummary[]>([]);
     const conversationRef = useRef<HTMLElement>(null);
@@ -143,6 +145,7 @@ export function CadWorkbench({
       () => artifacts.find((artifact) => artifact.path === selectedPath),
       [artifacts, selectedPath],
     );
+    const artifactUpdateCursor = useRef<{ draftId: string; cursor: ArtifactUpdateCursor }>({ draftId: '', cursor: { sequence: 0 } });
     const activeSession = useMemo(
       () => sessions.find((session) => session.id === sessionId),
       [sessionId, sessions],
@@ -630,6 +633,11 @@ export function CadWorkbench({
       }
       if (event.type === 'artifacts') {
         if (event.sessionId !== runSessionId) return;
+        const previousCursor = artifactUpdateCursor.current.draftId === draftId
+          ? artifactUpdateCursor.current.cursor : { sequence: 0 };
+        const cursor = acceptArtifactUpdate(event, previousCursor);
+        if (!cursor) return;
+        artifactUpdateCursor.current = { draftId, cursor };
         setArtifacts(event.artifacts);
         if (event.artifactWorkspace) {
           setArtifactWorkspace(event.artifactWorkspace);
@@ -759,7 +767,11 @@ export function CadWorkbench({
           ? beginUserDraft(true)
           : sessionId;
       const isCurrentSession = sessionScopeRef.current.capture(requestSessionId);
+      turnScopeRef.current.activate(draftId);
+      const isCurrentTurn = turnScopeRef.current.capture(draftId);
+      const isCurrentRequest = () => isCurrentSession() && isCurrentTurn();
       abortRef.current = controller;
+      artifactUpdateCursor.current = { draftId, cursor: { sequence: 0 } };
       artifactSnapshotRef.current =
         requestSessionId === sessionId ? artifacts : [];
       setMessages((current) => [
@@ -781,14 +793,15 @@ export function CadWorkbench({
         await streamAgent({
           images,
           message: messageText,
-          onEvent: (agentEvent) =>
-            updateDraft(agentEvent, draftId, requestSessionId, isCurrentSession),
+          onEvent: (agentEvent) => {
+            if (!controller.signal.aborted) updateDraft(agentEvent, draftId, requestSessionId, isCurrentRequest);
+          },
           sessionId: requestSessionId,
           signal: controller.signal,
           taskType: 'cad',
         });
       } catch (error) {
-        if (!isCurrentSession()) return;
+        if (!isCurrentRequest()) return;
         const message = errorText(error, language);
         const status =
           error instanceof DOMException && error.name === 'AbortError'
@@ -802,9 +815,11 @@ export function CadWorkbench({
           }),
         );
       } finally {
-        abortRef.current = undefined;
-        setRunning(false);
-        requestAnimationFrame(() => textareaRef.current?.focus());
+        if (isCurrentTurn()) {
+          abortRef.current = undefined;
+          setRunning(false);
+          requestAnimationFrame(() => textareaRef.current?.focus());
+        }
       }
     }
 

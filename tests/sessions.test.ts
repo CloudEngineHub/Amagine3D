@@ -19,6 +19,14 @@ import {
 } from '../server/sessions.ts';
 import { writeUnifiedBuildFixture } from './unified-build-fixture.ts';
 import { fileSectionArtifacts } from '../src/lib/artifact-selection.ts';
+import {
+  completeChatTurn,
+  emptyChatTurn,
+  restoreChatTurn,
+  startChatStep,
+  turnAccounting,
+} from '../src/lib/chat-turn.ts';
+import type { ChatMessage } from '../src/types.ts';
 import { createArtifactArchive } from '../server/artifact-archive.ts';
 import { parameterModelsForWorkspace } from '../server/model-parameters.ts';
 
@@ -234,6 +242,68 @@ test('discovers only artifacts from the selected session and features its displa
       ['part-display.step', 'part.step', 'part.stl'],
     );
     assert.equal(sessionWorkspaceRoot(root, '../escape'), undefined);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test('keeps per-attempt usage accounting and reads legacy turns without it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'amagine-turn-accounting-'));
+  const sessionRoot = join(root, 'sessions');
+  try {
+    const accounting = turnAccounting({
+      attemptId: 'attempt-1',
+      model: 'openai/gpt-5.5',
+      outcome: 'failed',
+      taskType: 'cad',
+      usage: {
+        cacheWriteInputTokens: 3,
+        cachedInputTokens: 40,
+        inputTokens: 100,
+        outputTokens: 25,
+        reasoningOutputTokens: 9,
+      },
+    });
+    const turn = completeChatTurn(
+      startChatStep(emptyChatTurn(Date.now() - 2), {
+        id: 'step-1',
+        label: '正在生成 CAD 几何',
+        occurredAt: Date.now() - 1,
+        stage: 'command',
+        status: 'running',
+      }),
+      {
+        accounting,
+        finishedAt: Date.now(),
+        replyText: '本次执行失败，用量已记录。',
+        status: 'failed',
+      },
+    );
+    await appendSessionAssistantTurn(sessionRoot, SESSION_ID, turn);
+
+    const [restored] = (await readSessionMessages(
+      join(sessionRoot, `${SESSION_ID}.json`),
+    )).filter(
+      (message): message is Extract<ChatMessage, { role: 'assistant' }> =>
+        message.role === 'assistant',
+    );
+    assert.deepEqual(restored?.accounting, accounting);
+    const { id: _id, role: _role, ...turnBody } = restored;
+    assert.deepEqual(restoreChatTurn(restored), turnBody);
+
+    // Turns written before accounting existed stay readable and stay without it.
+    await appendSessionAssistantTurn(sessionRoot, SESSION_ID, {
+      finishedAt: Date.now(),
+      replyText: '旧回合',
+      startedAt: Date.now() - 1,
+      steps: [],
+    });
+    const messages = await readSessionMessages(
+      join(sessionRoot, `${SESSION_ID}.json`),
+    );
+    const legacy = messages.at(-1);
+    assert.equal(legacy?.role, 'assistant');
+    assert.equal('accounting' in (legacy ?? {}), false);
   } finally {
     await rm(root, { force: true, recursive: true });
   }

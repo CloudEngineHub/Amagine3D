@@ -1,14 +1,18 @@
 import { strict as assert } from 'node:assert';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
 import {
+  CodexRuntime,
   ModelOutputLimitError,
+  normalizeTurnUsage,
   type CodexRuntimeLike,
   type RuntimeEvent,
+  type TurnUsage,
 } from '@amagine3d/a3d-runtime';
 import express from 'express';
 
@@ -18,7 +22,7 @@ import {
   readSessionMessages,
   readSessionThreadId,
 } from '../server/sessions.ts';
-import type { AgentEvent } from '../src/types.ts';
+import type { AgentEvent, ChatMessage } from '../src/types.ts';
 
 const SESSION_ID = '3b0d4f25-1707-4cc8-92cf-6f5c28edfc93';
 
@@ -229,7 +233,7 @@ test('streams one native Codex turn without server-side repair prompts', async (
         '正在执行 CAD 检查',
         '正在检查可打印网格',
         '正在检查产物新鲜度',
-        '工具执行未成功，A3D 正在尝试修复',
+        '命令返回非零退出码，需结合结果判断原因',
         '正在搜索网络资料',
         'A3D 正在分析搜索结果',
         '正在组织回复',
@@ -253,7 +257,7 @@ test('streams one native Codex turn without server-side repair prompts', async (
         'Running a CAD validation stage',
         'Checking printable meshes',
         'Checking artifact freshness',
-        'The tool failed; A3D is trying to repair the issue',
+        'The command returned a nonzero exit code',
         'Searching web references',
         'A3D is analyzing the search results',
         'Organizing the response',
@@ -848,4 +852,376 @@ test('closes the turn executor lease when the client disconnects mid-turn', asyn
       assert.equal(closeCalls, 1);
     },
   );
+});
+
+const SDK_USAGE = {
+  cache_write_input_tokens: 3,
+  cached_input_tokens: 40,
+  input_tokens: 100,
+  output_tokens: 25,
+  reasoning_output_tokens: 9,
+};
+
+function chatRuntime(
+  root: string,
+  runTurn: CodexRuntimeLike['runTurn'],
+): CodexRuntimeLike {
+  return {
+    configured: true,
+    modelName: 'openai/test-model',
+    runtimeReady: true,
+    searchBackend: 'disabled',
+    skillDiagnostics: [],
+    skills: [],
+    stateRoot: join(root, 'state'),
+    webSearchEnabled: false,
+    workspaceRoot: join(root, 'workspace'),
+    runTurn,
+  };
+}
+
+function chatDependencies(
+  root: string,
+  runtime: CodexRuntimeLike,
+): Parameters<typeof registerChatRoute>[1] {
+  return {
+    python: { executable: null, ready: false, version: null },
+    runtime,
+    runtimeError: undefined,
+  };
+}
+
+test('failed model turn preserves CAD status and delivers existing files once', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'amagine-failed-cad-evidence-'));
+  const workspace = join(root, 'workspace', 'sessions', SESSION_ID);
+  await mkdir(workspace, { recursive: true });
+  const source = join(workspace, 'build.py');
+  await writeFile(source, '# source');
+  const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
+  const runtime = chatRuntime(root, async (request) => {
+    await writeFile(join(workspace, 'model_compile-result.json'), JSON.stringify({
+      schema: 'evidence-cad-compile-result/v2', runId: 'cad-run', status: 'awaiting-visual-review',
+      pass: true, visualReviewRequired: true, inputBindings: { source: { path: source, sha256: hash(await readFile(source)) } },
+    }));
+    await request.onEvent?.({ type: 'turn.completed', usage: normalizeTurnUsage(SDK_USAGE) });
+    throw new ModelOutputLimitError({ eventIndex: 4, completionSeen: true, threadId: 'thread' });
+  });
+  await withChatServer(root, { ...chatDependencies(root, runtime), python: { executable: 'python', ready: true, version: null } }, async (baseUrl) => {
+    const response = await postChat(baseUrl, { message: '生成模型', sessionId: SESSION_ID, taskType: 'cad' });
+    const events = (await response.text()).trim().split('\n').map((line) => JSON.parse(line) as AgentEvent);
+    assert.equal(events.filter((event) => event.type === 'artifacts').length, 1);
+    const terminal = events.at(-1);
+    assert.equal(terminal?.type, 'error');
+    if (terminal?.type === 'error') assert.match(terminal.message, /CAD 自动检查已通过.*需要视觉审查/u);
+    const messages = await readSessionMessages(join(root, 'state', 'sessions', `${SESSION_ID}.json`));
+    const turn = messages.at(-1);
+    assert.equal(turn?.role, 'assistant');
+    if (turn?.role === 'assistant') {
+      assert.equal(turn.accounting?.outcome, 'failed');
+      assert.equal(turn.cadResult?.pass, true);
+      assert.equal(turn.cadResult?.visualReviewRequired, true);
+      assert.equal(turn.runtimeFailure?.eventIndex, 4);
+      assert.equal(turn.accounting?.usage?.inputTokens, 100);
+    }
+  });
+});
+
+test('persists the five SDK counts per attempt across two turns of one session', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'amagine-usage-route-'));
+  const sessionRoot = join(root, 'state', 'sessions');
+  await mkdir(join(root, 'workspace', 'sessions', SESSION_ID), {
+    recursive: true,
+  });
+  const second: TurnUsage = {
+    cacheWriteInputTokens: 0,
+    cachedInputTokens: 0,
+    inputTokens: 7,
+    outputTokens: 2,
+    reasoningOutputTokens: 0,
+  };
+  const reports: TurnUsage[] = [normalizeTurnUsage(SDK_USAGE)!, second];
+  let call = 0;
+  const runtime = chatRuntime(root, async (request) => {
+    const usage = reports[call]!;
+    call += 1;
+    await request.onEvent?.({ type: 'turn.started' });
+    await request.onEvent?.({ type: 'turn.completed', usage });
+    // The turn result repeats the same snapshot; accounting keeps one copy.
+    return { finalResponse: 'ok', threadId: 'thread-1', usage };
+  });
+
+  await withChatServer(root, chatDependencies(root, runtime), async (baseUrl) => {
+    for (const message of ['创建支架', '加厚侧壁']) {
+      const response = await postChat(baseUrl, {
+        message,
+        sessionId: SESSION_ID,
+        taskType: 'chat',
+      });
+      assert.equal(response.status, 200);
+      await response.text();
+    }
+    const messages = await readSessionMessages(join(sessionRoot, `${SESSION_ID}.json`));
+    const turns = messages.filter(
+      (message): message is Extract<ChatMessage, { role: 'assistant' }> =>
+        message.role === 'assistant',
+    );
+    assert.equal(turns.length, 2);
+    assert.deepEqual(
+      turns.map(({ accounting }) => accounting?.usage),
+      [normalizeTurnUsage(SDK_USAGE), second],
+    );
+    assert.deepEqual(
+      turns.map(({ accounting }) => accounting?.usageCoverage),
+      ['full', 'full'],
+    );
+    assert.deepEqual(
+      turns.map(({ accounting }) => accounting?.outcome),
+      ['completed', 'completed'],
+    );
+    assert.deepEqual(
+      turns.map(({ accounting }) => accounting?.model),
+      ['openai/test-model', 'openai/test-model'],
+    );
+    assert.deepEqual(
+      turns.map(({ accounting }) => accounting?.usageSource),
+      ['sdk', 'sdk'],
+    );
+    assert.equal(
+      turns[0]!.accounting!.attemptId !== turns[1]!.accounting!.attemptId,
+      true,
+    );
+  });
+});
+
+test('records a failed attempt without inventing zero usage', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'amagine-usage-failed-'));
+  const sessionRoot = join(root, 'state', 'sessions');
+  await mkdir(join(root, 'workspace', 'sessions', SESSION_ID), {
+    recursive: true,
+  });
+  const runtime = chatRuntime(root, async (request) => {
+    await request.onEvent?.({ type: 'turn.started' });
+    await request.onEvent?.({ message: 'stream reset', type: 'error' });
+    throw new Error('stream reset');
+  });
+
+  await withChatServer(root, chatDependencies(root, runtime), async (baseUrl) => {
+    const response = await postChat(baseUrl, {
+      message: '解释 BRep',
+      sessionId: SESSION_ID,
+      taskType: 'chat',
+    });
+    await response.text();
+    const [assistant] = (await readSessionMessages(
+      join(sessionRoot, `${SESSION_ID}.json`),
+    )).filter(
+      (message): message is Extract<ChatMessage, { role: 'assistant' }> =>
+        message.role === 'assistant',
+    );
+    assert.equal(assistant?.accounting?.outcome, 'failed');
+    assert.equal(assistant?.accounting?.usageCoverage, 'unavailable');
+    assert.equal('usage' in (assistant?.accounting ?? {}), false);
+  });
+});
+
+test('keeps reported usage when max_output_tokens truncates the turn', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'amagine-usage-output-limit-'));
+  const sessionRoot = join(root, 'state', 'sessions');
+  await mkdir(join(root, 'workspace', 'sessions', SESSION_ID), {
+    recursive: true,
+  });
+  const runtime = chatRuntime(root, async (request) => {
+    await request.onEvent?.({ type: 'turn.started' });
+    await request.onEvent?.({
+      type: 'turn.completed',
+      usage: normalizeTurnUsage(SDK_USAGE),
+    });
+    throw new ModelOutputLimitError();
+  });
+
+  await withChatServer(root, chatDependencies(root, runtime), async (baseUrl) => {
+    const response = await postChat(baseUrl, {
+      message: '继续建模',
+      sessionId: SESSION_ID,
+      taskType: 'chat',
+    });
+    const events = (await response.text())
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as AgentEvent);
+    assert.equal(events.at(-1)?.type, 'error');
+    const [assistant] = (await readSessionMessages(
+      join(sessionRoot, `${SESSION_ID}.json`),
+    )).filter(
+      (message): message is Extract<ChatMessage, { role: 'assistant' }> =>
+        message.role === 'assistant',
+    );
+    // Usage is what the attempt cost; the truncated turn still failed.
+    assert.equal(assistant?.accounting?.outcome, 'failed');
+    assert.equal(assistant?.accounting?.usageCoverage, 'full');
+    assert.deepEqual(assistant?.accounting?.usage, normalizeTurnUsage(SDK_USAGE));
+  });
+});
+
+test('a reasoning-only finish fails the CAD route while preserving thread and usage', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'amagine-incomplete-final-route-'));
+  const progress = '我分批查询所需的建模操作合同（上限 20 个）。';
+  let modelCalls = 0;
+  const runtime = await CodexRuntime.create(root, {
+    environment: { LLM_API_KEY: 'test-key', PATH: '/usr/bin' },
+    clientFactory: () => {
+      const thread = {
+        id: 'incomplete-final-thread',
+        async runStreamed() {
+          modelCalls += 1;
+          async function* events() {
+            yield { type: 'thread.started', thread_id: thread.id } as const;
+            yield { type: 'turn.started' } as const;
+            yield { type: 'item.completed', item: { type: 'agent_message', id: 'progress', text: progress } } as const;
+            for (const id of ['batch-1', 'batch-2']) yield {
+              type: 'item.completed',
+              item: { type: 'command_execution', id, command: 'a3d agent capabilities <batch>',
+                aggregated_output: '{}', status: 'completed', exit_code: 0 },
+            } as const;
+            yield { type: 'item.completed', item: { type: 'reasoning', id: 'reasoning', text: '' } } as const;
+            yield { type: 'turn.completed', usage: SDK_USAGE } as const;
+          }
+          return { events: events() };
+        },
+      };
+      return { startThread: () => thread, resumeThread: () => thread };
+    },
+  });
+  await withChatServer(root, {
+    ...chatDependencies(root, runtime),
+    python: { executable: null, ready: true, version: null },
+  }, async (baseUrl) => {
+    const response = await postChat(baseUrl, {
+      message: '生成桌面机器人', sessionId: SESSION_ID, taskType: 'cad',
+    });
+    const events = (await response.text()).trim().split('\n').map((line) => JSON.parse(line) as AgentEvent);
+    const terminal = events.at(-1);
+    assert.ok(terminal?.type === 'error');
+    assert.equal(terminal.code, 'model_incomplete_response');
+    assert.equal(events.some(({ type }) => type === 'complete'), false);
+    assert.equal(modelCalls, 1);
+    const sessionRoot = join(runtime.stateRoot, 'sessions');
+    assert.equal(await readSessionThreadId(sessionRoot, SESSION_ID), 'incomplete-final-thread');
+    const [assistant] = (await readSessionMessages(join(sessionRoot, `${SESSION_ID}.json`))).filter(
+      (message): message is Extract<ChatMessage, { role: 'assistant' }> => message.role === 'assistant',
+    );
+    assert.ok(assistant);
+    assert.equal(assistant.accounting?.outcome, 'failed');
+    assert.equal(assistant.accounting?.usageCoverage, 'full');
+    assert.deepEqual(assistant.accounting?.usage, normalizeTurnUsage(SDK_USAGE));
+    assert.deepEqual(assistant.runtimeFailure, {
+      code: 'model_incomplete_response', eventIndex: 7,
+      threadId: 'incomplete-final-thread', completionSeen: true,
+    });
+    assert.match(assistant.replyText, /没有有效的最终回复/u);
+    assert.notEqual(assistant.replyText, progress);
+    assert.ok(assistant.steps.some(({ status }) => status === 'failed'));
+    assert.equal(assistant.steps.some(({ stage }) => stage === 'files'), false);
+    assert.equal(assistant.cadResult, undefined);
+  });
+});
+
+test('marks an attempt that never reached the model as not started', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'amagine-usage-not-started-'));
+  const sessionRoot = join(root, 'state', 'sessions');
+  await mkdir(join(root, 'workspace', 'sessions', SESSION_ID), {
+    recursive: true,
+  });
+  let runCalls = 0;
+  const runtime = chatRuntime(root, async () => {
+    runCalls += 1;
+    return { finalResponse: 'ok', threadId: 'thread-1' };
+  });
+
+  await withChatServer(
+    root,
+    {
+      ...chatDependencies(root, runtime),
+      openTurnExecutor: () => {
+        throw new Error('no executor available');
+      },
+    },
+    async (baseUrl) => {
+      const response = await postChat(baseUrl, {
+        message: '解释 BRep',
+        sessionId: SESSION_ID,
+        taskType: 'chat',
+      });
+      await response.text();
+      assert.equal(runCalls, 0);
+      const [assistant] = (await readSessionMessages(
+        join(sessionRoot, `${SESSION_ID}.json`),
+      )).filter(
+        (message): message is Extract<ChatMessage, { role: 'assistant' }> =>
+          message.role === 'assistant',
+      );
+      assert.equal(assistant?.accounting?.outcome, 'not_started');
+      assert.equal(assistant?.accounting?.usageCoverage, 'unavailable');
+    },
+  );
+});
+
+test('keeps usage reported before a client disconnect without marking success', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'amagine-usage-disconnect-'));
+  const sessionRoot = join(root, 'state', 'sessions');
+  await mkdir(join(root, 'workspace', 'sessions', SESSION_ID), {
+    recursive: true,
+  });
+  let sawTurnStarted = false;
+  const runtime = chatRuntime(root, async (request) => {
+    sawTurnStarted = true;
+    await request.onEvent?.({ type: 'turn.started' });
+    await request.onEvent?.({
+      type: 'turn.completed',
+      usage: normalizeTurnUsage(SDK_USAGE),
+    });
+    await new Promise<void>((_resolve, reject) => {
+      request.signal?.addEventListener(
+        'abort',
+        () => reject(new Error('aborted')),
+        { once: true },
+      );
+    });
+    return { finalResponse: 'late', threadId: 'thread-1' };
+  });
+
+  await withChatServer(root, chatDependencies(root, runtime), async (baseUrl) => {
+    const controller = new AbortController();
+    const responsePromise = fetch(`${baseUrl}/api/chat`, {
+      body: JSON.stringify({
+        message: '长任务',
+        sessionId: SESSION_ID,
+        taskType: 'chat',
+      }),
+      headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      signal: controller.signal,
+    }).catch(() => undefined);
+    const deadline = Date.now() + 3_000;
+    while (!sawTurnStarted && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(sawTurnStarted, true);
+    controller.abort();
+    await responsePromise;
+    // The turn settles after the client is gone; wait for the ledger to land
+    // before asserting on it.
+    let assistant: Extract<ChatMessage, { role: 'assistant' }> | undefined;
+    while (!assistant && Date.now() < deadline) {
+      assistant = (await readSessionMessages(
+        join(sessionRoot, `${SESSION_ID}.json`),
+      )).find(
+        (message): message is Extract<ChatMessage, { role: 'assistant' }> =>
+          message.role === 'assistant',
+      );
+      if (!assistant) await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(assistant?.accounting?.outcome, 'cancelled');
+    assert.deepEqual(assistant?.accounting?.usage, normalizeTurnUsage(SDK_USAGE));
+  });
 });
