@@ -2,6 +2,9 @@
 
 > **English**: [View the English version](./CONTRIBUTING.md)
 
+需要先讨论设计方案的改动，可使用 [RFC 模板](../doc/RFC_TEMPLATE.md) 创建 issue。
+使用 `RFC: 提案标题` 作为 issue 标题，将模板各章节复制到正文，并替换占位内容。
+
 使用 Node.js 22.19.0 或更新版本、Python 3.10 至 3.13 和 npm。
 
 ```bash

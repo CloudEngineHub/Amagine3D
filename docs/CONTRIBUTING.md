@@ -2,6 +2,10 @@
 
 > **简体中文**：[查看中文版](./CONTRIBUTING.zh-CN.md)
 
+For changes that need design discussion, open an issue using the
+[RFC template](../doc/RFC_TEMPLATE.md) (in Chinese). Use `RFC: Proposal title` as
+the issue title, copy the template sections into the body, and replace the placeholders.
+
 Use Node.js 22.19.0 or newer, Python 3.10 through 3.13, and npm.
 
 ```bash
