@@ -20,6 +20,7 @@ import {
 } from '../src/types.ts';
 import { USER_SESSION_ID } from '../src/session-id.ts';
 import { scanArtifacts } from './artifacts.ts';
+import { readCadRunArtifacts } from './cad-run-evidence.ts';
 import { bundledPomodoroArtifacts } from './bundled-workspace.ts';
 import { discoverModelBuilds } from './model-builds.ts';
 
@@ -301,6 +302,7 @@ export async function userSessionArtifacts(
   const root = sessionWorkspaceRoot(workspaceRoot, sessionId);
   if (!root) return undefined;
   const scannedArtifacts = await scanArtifacts(root);
+  const stagedArtifacts = await readCadRunArtifacts(root);
   const builds = await discoverModelBuilds(root, scannedArtifacts);
   const featuredPaths = new Set(
     builds.map(({ displayPreviewPath }) => displayPreviewPath),
@@ -308,18 +310,25 @@ export async function userSessionArtifacts(
   const primaryPaths = new Set(
     builds.flatMap(({ topLevelArtifactPaths }) => topLevelArtifactPaths),
   );
+  const legacyPaths = new Set(builds.filter((build) => build.legacy).flatMap((build) => build.artifactPaths));
   const displayMetadata = new Map(builds.flatMap((build) =>
     build.topLevelArtifactPaths.map((path) => {
       const plate = build.printPlates?.find((item) => item.stlPath === path || item.threeMfPath === path);
-      return [path, { modelId: build.modelId, buildId: build.runId,
+      return [path, { modelId: build.modelId, buildId: build.runId, ...(build.legacy ? { legacy: true, readOnly: true } : {}),
         ...(plate ? { plateId: plate.id } : {}) }] as const;
     }),
   ));
-  const artifacts = scannedArtifacts.map((artifact) => ({
+  const combined = new Map(scannedArtifacts.map((artifact) => [artifact.path, artifact]));
+  for (const artifact of stagedArtifacts) combined.set(artifact.path, artifact);
+  const artifacts = [...combined.values()].map((artifact) => ({
     ...artifact,
     ...displayMetadata.get(artifact.path),
     ...(featuredPaths.has(artifact.path) ? { featured: true } : {}),
-    ...(primaryPaths.has(artifact.path) ? { primary: true } : {}),
+    ...(primaryPaths.has(artifact.path) ? { primary: artifact.purpose !== 'internal-evidence' || artifact.status === undefined,
+      manufacturingStatus: artifact.manufacturingStatus ?? (legacyPaths.has(artifact.path) ? undefined : 'pending'),
+      status: artifact.status ?? (legacyPaths.has(artifact.path) ? 'diagnostic' as const : 'validated' as const),
+      purpose: artifact.status !== undefined ? artifact.purpose : artifact.format === 'step' ? featuredPaths.has(artifact.path) ? 'display-preview' as const : 'cad-model' as const : artifact.format ? 'print-package' as const : 'cad-model' as const } : {}),
+    ...(artifact.previewImagePath ? { previewImageUrl: `/api/sessions/${encodeURIComponent(sessionId)}/artifacts/file?path=${encodeURIComponent(artifact.previewImagePath)}` } : {}),
     url: `/api/sessions/${encodeURIComponent(sessionId)}/artifacts/file?path=${encodeURIComponent(artifact.path)}`,
   }));
   return {

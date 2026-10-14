@@ -1,11 +1,12 @@
 import type {
   CadSystem,
   CadSystemAvailability,
+  TurnUsage,
 } from '@amagine3d/a3d-runtime';
 
-export const API_VERSION = 11;
+export const API_VERSION = 12;
 export const BUNDLED_POMODORO_SESSION_ID = 'builtin:amagine3d-pomodoro';
-export type { CadSystem, CadSystemAvailability };
+export type { CadSystem, CadSystemAvailability, TurnUsage };
 export const ACCEPTED_IMAGE_TYPES = [
   'image/png',
   'image/jpeg',
@@ -19,7 +20,7 @@ export const MAX_TOTAL_IMAGE_BYTES = 12 * 1024 * 1024;
 export type AcceptedImageType = (typeof ACCEPTED_IMAGE_TYPES)[number];
 export type ArtifactKind = 'image' | 'model' | 'report' | 'source' | 'other';
 export type ChatTaskType = 'cad' | 'chat';
-export type PreviewFormat = '3mf' | 'glb' | 'stl';
+export type PreviewFormat = '3mf' | 'step' | 'stl';
 
 export interface ImageAttachment {
   data: string;
@@ -55,12 +56,59 @@ export interface ChatStep {
   status: ChatStepStatus;
 }
 
+/**
+ * How one runtime execution attempt ended. This describes the model execution
+ * only; a completed attempt is not evidence that CAD acceptance passed.
+ */
+export type TurnAccountingOutcome =
+  | 'cancelled'
+  | 'completed'
+  | 'failed'
+  | 'not_started'
+  | 'timed_out';
+
+/**
+ * Whether the SDK reported the complete five counts, only some of them, or
+ * nothing at all for this attempt.
+ */
+export type TurnUsageCoverage = 'full' | 'partial' | 'unavailable';
+
+/**
+ * Optional bookkeeping for one `runTurn` execution attempt. Never infer counts
+ * the SDK did not report: a missing field is unknown, not zero.
+ */
+export interface ChatTurnAccounting {
+  attemptId: string;
+  model: string;
+  outcome: TurnAccountingOutcome;
+  taskType: ChatTaskType;
+  usage?: TurnUsage;
+  usageCoverage: TurnUsageCoverage;
+  usageSource: 'sdk';
+}
+
 export interface ChatTurn {
+  /** Independent from model completion; a CAD pass still requires visual review. */
+  cadResult?: CadRunEvidence;
+  runtimeFailure?: { code: 'model_output_limit' | 'model_incomplete_response'; eventIndex: number; threadId?: string; completionSeen: boolean };
+  /** Absent on turns recorded before per-attempt accounting was added. */
+  accounting?: ChatTurnAccounting;
   finishedAt?: number;
   replyText: string;
   /** Absent only on persisted turns created before task-level timing was added. */
   startedAt?: number;
   steps: ChatStep[];
+}
+
+export interface CadRunEvidence {
+  runId: string;
+  report: { path: string; sha256: string };
+  status: string;
+  pass: boolean;
+  visualReviewRequired: boolean;
+  inputsCurrent: boolean;
+  revision?: string;
+  stages?: Record<string, { status: string; [key: string]: unknown }>;
 }
 
 export interface UserChatMessage {
@@ -82,7 +130,14 @@ export interface SkillSummary {
   name: string;
 }
 
+export type ArtifactPurpose = 'display-preview' | 'draft-preview' | 'diagnostic-preview' |
+  'print-package' | 'cad-model' | 'internal-evidence' | 'unclassified';
+
 export interface ArtifactSummary {
+  legacy?: boolean;
+  manufacturingStatus?: string;
+  previewImagePath?: string;
+  previewImageUrl?: string;
   modelId?: string;
   buildId?: string;
   plateId?: string;
@@ -93,6 +148,11 @@ export interface ArtifactSummary {
   name: string;
   path: string;
   primary?: boolean;
+  purpose?: ArtifactPurpose;
+  status?: 'draft' | 'diagnostic' | 'failed' | 'validated';
+  revision?: string;
+  inputsCurrent?: boolean;
+  sha256?: string;
   readOnly?: boolean;
   size: number;
   url: string;
@@ -129,6 +189,7 @@ export interface ModelParameter {
 }
 
 export interface ParameterModel {
+  runId?: string;
   printPlates?: { id: string; stlPath: string; threeMfPath: string }[];
   artifactPaths: string[];
   displayPreviewPath: string;
@@ -211,6 +272,9 @@ export type AgentEvent =
       artifacts: ArtifactSummary[];
       artifactWorkspace?: ArtifactWorkspace;
       sessionId: string;
+      /** Bound to the execution attempt; sequence is monotonic within that turn. */
+      attemptId?: string;
+      sequence?: number;
     }
   | {
       type: 'complete';

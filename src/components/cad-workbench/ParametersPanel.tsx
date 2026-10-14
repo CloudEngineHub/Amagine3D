@@ -104,8 +104,8 @@ export function ParametersPanel({
               description={
                 hasParameterModels
                   ? text(
-                      'Select the display GLB or its STL/3MF print root to adjust the complete model.',
-                      '请选择展示 GLB 或对应的 STL/3MF 打印根文件，才能调整完整模型。',
+                      'Select the display STEP or its STL/3MF print root to adjust the complete model.',
+                      '请选择展示 STEP 或对应的 STL/3MF 打印根文件，才能调整完整模型。',
                     )
                   : text(
                       'Adjustable model parameters will appear here when the project declares them.',

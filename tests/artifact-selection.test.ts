@@ -32,12 +32,13 @@ function model(
 ): ArtifactSummary {
   return {
     ...artifact(path, 'model', modifiedAt),
+    ...(format ? { purpose: format === 'step' ? 'display-preview' as const : 'print-package' as const } : {}),
     ...(format ? { format } : {}),
   };
 }
 
 test('keeps plate selection and hides individual parts and obsolete plates', () => {
-  const display = { ...model('pair-display.glb', 'glb', '2026-09-09'), primary: true, modelId: 'pair', buildId: 'new' };
+  const display = { ...model('pair-display.step', 'step', '2026-09-09'), primary: true, modelId: 'pair', buildId: 'new' };
   const plates = ['01', '02'].flatMap((plateId) => (['3mf', 'stl'] as const).map((format) => ({
     ...model(`pair-plate-${plateId}.${format}`, format, `2026-09-09T00:00:0${plateId === '02' ? 2 : 1}Z`),
     primary: true, modelId: 'pair', buildId: 'new', plateId,
@@ -55,43 +56,56 @@ test('keeps plate selection and hides individual parts and obsolete plates', () 
   assert.equal(printPreviewForSelection(artifacts, display, { primaryPreviewPath: plates[0]!.path }), plates[0]);
 });
 
-test('selects the display GLB over the top-level STL for single-color builds', () => {
+test('failed-build cutters and unknown files never become automatic product previews', () => {
+  const cutter = { ...model('design-builds/failed/feature-cap-socket.stl', 'stl', '2026-10-13'),
+    purpose: 'internal-evidence' as const };
+  const unknown = { ...model('unknown.step', 'step', '2026-10-13'), purpose: 'unclassified' as const };
+  assert.equal(defaultPreviewArtifact([cutter, unknown]), undefined);
+  assert.equal(preferredPrintPreviewArtifact([cutter]), undefined);
+  assert.deepEqual(fileSectionArtifacts([cutter, unknown]), []);
+  const draft = { ...model('.amagine3d-drafts/current/draft.step', 'step', '2026-10-13'),
+    purpose: 'draft-preview' as const, status: 'draft' as const, primary: true };
+  assert.equal(defaultPreviewArtifact([cutter, unknown, draft]), draft);
+  assert.equal(preferredPrintPreviewArtifact([draft, cutter]), undefined);
+});
+
+test('selects the display STEP over the top-level STL for single-color builds', () => {
   const artifacts = [
     model('bracket.stl', 'stl', '2026-08-23T08:00:02.000Z'),
-    model('bracket-display.glb', 'glb', '2026-08-23T08:00:03.000Z'),
+    model('bracket-display.step', 'step', '2026-08-23T08:00:03.000Z'),
   ];
   assert.equal(
     preferredDisplayPreviewArtifact(artifacts)?.path,
-    'bracket-display.glb',
+    'bracket-display.step',
   );
-  assert.equal(defaultPreviewArtifact(artifacts)?.path, 'bracket-display.glb');
+  assert.equal(defaultPreviewArtifact(artifacts)?.path, 'bracket-display.step');
 });
 
-test('selects the display GLB over the 3MF print package for color builds', () => {
+test('selects the display STEP over the 3MF print package for color builds', () => {
   const artifacts = [
-    model('timer-display.glb', 'glb', '2026-08-23T08:00:05.000Z'),
+    model('timer-display.step', 'step', '2026-08-23T08:00:05.000Z'),
     model('timer.3mf', '3mf', '2026-08-23T08:00:04.000Z'),
     model('timer-region-screen.stl', 'stl', '2026-08-23T08:00:03.000Z'),
     model('timer-region-housing.stl', 'stl', '2026-08-23T08:00:02.000Z'),
   ];
   assert.equal(
     preferredDisplayPreviewArtifact(artifacts)?.path,
-    'timer-display.glb',
+    'timer-display.step',
   );
   assert.equal(preferredPrintPreviewArtifact(artifacts)?.path, 'timer.3mf');
 });
 
-test('honors a featured display GLB as the visible model', () => {
+test('honors a featured display STEP as the visible model', () => {
   const artifacts = [
     model('timer.3mf', '3mf', '2026-08-23T08:00:04.000Z'),
     {
-      ...model('timer-display.glb', 'glb', '2026-08-23T08:00:03.000Z'),
+      ...model('timer-display.step', 'step', '2026-08-23T08:00:03.000Z'),
       featured: true,
     },
   ];
   assert.equal(
     preferredDisplayPreviewArtifact(artifacts)?.path,
-    'timer-display.glb',
+    'timer-display.step',
   );
 });
 
@@ -126,11 +140,11 @@ test('honors the explicit preview of a bundled project', () => {
   );
 });
 
-test('shows GLB, 3MF, and only the matching top-level STL in the file section', () => {
+test('shows STEP, 3MF, and only the matching top-level STL in the file section', () => {
   const artifacts = [
     artifact('part.py', 'source'),
     {
-      ...model('part-display.glb', 'glb', '2026-08-23T08:00:05.000Z'),
+      ...model('part-display.step', 'step', '2026-08-23T08:00:05.000Z'),
       primary: true,
     },
     {
@@ -149,13 +163,13 @@ test('shows GLB, 3MF, and only the matching top-level STL in the file section', 
   ];
   assert.deepEqual(
     fileSectionArtifacts(artifacts).map(({ path }) => path),
-    ['part-display.glb', 'part.3mf', 'part.stl'],
+    ['part-display.step', 'part.3mf', 'part.stl'],
   );
 });
 
 test('pins the preferred visible model at the top of the file section', () => {
   const preferred = {
-    ...model('shell_case-display.glb', 'glb', '2026-08-23T08:00:01.000Z'),
+    ...model('shell_case-display.step', 'step', '2026-08-23T08:00:01.000Z'),
     featured: true,
     primary: true,
   };
@@ -171,7 +185,7 @@ test('pins the preferred visible model at the top of the file section', () => {
   assert.deepEqual(
     fileSectionArtifacts(artifacts).map(({ path }) => path),
     [
-      'shell_case-display.glb',
+      'shell_case-display.step',
       'shell_case.stl',
     ],
   );
@@ -180,7 +194,7 @@ test('pins the preferred visible model at the top of the file section', () => {
 test('uses valid-build primary metadata to hide orphaned model revisions', () => {
   const artifacts = [
     {
-      ...model('ninekey-display.glb', 'glb', '2026-08-23T09:00:00.000Z'),
+      ...model('ninekey-display.step', 'step', '2026-08-23T09:00:00.000Z'),
       featured: true,
       primary: true,
     },
@@ -192,12 +206,12 @@ test('uses valid-build primary metadata to hide orphaned model revisions', () =>
       ...model('ninekey.stl', 'stl', '2026-08-23T09:00:00.000Z'),
       primary: true,
     },
-    model('relocated/a.glb', 'glb', '2026-08-23T08:00:00.000Z'),
+    model('relocated/a.step', 'step', '2026-08-23T08:00:00.000Z'),
     model('relocated/b.3mf', '3mf', '2026-08-23T08:00:00.000Z'),
     model('relocated/c.stl', 'stl', '2026-08-23T08:00:00.000Z'),
   ];
   assert.deepEqual(
     fileSectionArtifacts(artifacts).map(({ path }) => path),
-    ['ninekey-display.glb', 'ninekey.3mf', 'ninekey.stl'],
+    ['ninekey-display.step', 'ninekey.3mf', 'ninekey.stl'],
   );
 });

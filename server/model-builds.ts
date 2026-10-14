@@ -1,5 +1,6 @@
-import { realpath } from 'node:fs/promises';
-import { basename, relative, sep } from 'node:path';
+import { readFile, realpath } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { basename, dirname, relative, resolve, sep } from 'node:path';
 
 import type { ArtifactSummary } from '../src/types.ts';
 import {
@@ -12,6 +13,8 @@ import { resolveArtifactPath } from './artifacts.ts';
 const MAX_BUILD_REPORT_BYTES = 2 * 1024 * 1024;
 
 export interface ModelBuild {
+  legacy?: boolean;
+  cadArtifactPath?: string;
   artifactPaths: string[];
   displayPreviewPath: string;
   modelId: string;
@@ -41,7 +44,7 @@ function primaryArtifactKey(
     records.some(
       (record) =>
         record?.stl !== 'required' ||
-        record?.glb !== 'required' ||
+        record?.displayStep !== 'required' ||
         !['required', 'not-applicable'].includes(String(record?.step)) ||
         !['required', 'not-applicable'].includes(String(record?.threeMf)),
     )
@@ -72,6 +75,45 @@ function primaryArtifactReferenceKey(
   return partIds.length === 1 ? `stl:${partIds[0]}` : undefined;
 }
 
+async function legacyModel(root: string, reportPath: string, localReport: string): Promise<ModelBuild | undefined> {
+  try {
+    const report = JSON.parse(await readFile(reportPath, 'utf8'));
+    if (report.schema !== 'evidence-a3d-build/v1' || !String(report.backend).startsWith('brep-')) return;
+    const paths: Record<string, string> = {};
+    for (const [key, ref] of Object.entries(report.artifacts ?? {})) {
+      if (key === 'step:display') continue;
+      if (!key.startsWith('step:') && !key.startsWith('stl') && key !== '3mf' && !/^plate:\d+:(stl|3mf)$/u.test(key)) continue;
+      const file = ref as { path: string; sha256: string };
+      try {
+        const local = safeRelativePath(root, await realpath(resolvePath(reportPath, file.path)));
+        if (!local) return;
+        const candidate = await resolveArtifactPath(root, local);
+        if (!candidate || createHash('sha256').update(await readFile(candidate)).digest('hex') !== file.sha256) continue;
+        paths[key] = local;
+      } catch { /* A missing old print/source file does not hide a bound CAD file. */ }
+    }
+    const cad = paths['step:assembly'] ?? Object.entries(paths).find(([key]) => key.startsWith('step:'))?.[1];
+    if (!cad) return;
+    let source: string | undefined;
+    const ref = report.inputs?.source;
+    if (ref) {
+      try {
+        source = safeRelativePath(root, await realpath(resolvePath(reportPath, ref.path)));
+        const candidate = source && await resolveArtifactPath(root, source);
+        if (!candidate || createHash('sha256').update(await readFile(candidate)).digest('hex') !== ref.sha256) source = undefined;
+      } catch { source = undefined; }
+    }
+    const primary = paths['3mf'] ?? paths.stl ?? Object.entries(paths).find(([key]) => key.startsWith('stl:'))?.[1] ?? cad;
+    return { legacy: true, cadArtifactPath: cad, artifactPaths: Object.values(paths), displayPreviewPath: cad,
+      modelId: String(report.part), primaryPreviewPath: primary, reportPath: localReport,
+      ...(source ? { sourcePath: source } : {}), topLevelArtifactPaths: [...new Set([cad, primary])], runId: report.runId };
+  } catch { return undefined; }
+}
+
+function resolvePath(report: string, file: string): string {
+  return resolve(dirname(report), file);
+}
+
 export async function discoverModelBuilds(
   workspaceRoot: string,
   artifacts: readonly ArtifactSummary[],
@@ -93,7 +135,11 @@ export async function discoverModelBuilds(
       reportPath,
       { maxBytes: MAX_BUILD_REPORT_BYTES },
     );
-    if (!validated) continue;
+    if (!validated) {
+      const legacy = await legacyModel(canonicalRoot, reportPath, artifact.path);
+      if (legacy) builds.push(legacy);
+      continue;
+    }
     const report = validated.report;
     const primaryKey = primaryArtifactKey(report);
     if (!primaryKey) continue;
@@ -106,7 +152,7 @@ export async function discoverModelBuilds(
       : undefined;
     const displayPreviewPath = safeRelativePath(
       canonicalRoot,
-      validated.artifactPaths['glb:display'] ?? '',
+      validated.artifactPaths['step:display'] ?? '',
     );
     if (!primaryPreviewPath || !displayPreviewPath) continue;
     const sourcePath = validated.inputPaths.source
@@ -129,6 +175,10 @@ export async function discoverModelBuilds(
         ),
       ),
     ].filter((path): path is string => Boolean(path));
+    const cadKey = validated.artifactPaths['step:assembly'] ? 'step:assembly'
+      : Object.keys(validated.artifactPaths).find((key) => key === 'step' || (key.startsWith('step:') && key !== 'step:display'));
+    const cadArtifactPath = cadKey ? safeRelativePath(canonicalRoot, validated.artifactPaths[cadKey]!) : undefined;
+    if (cadArtifactPath) topLevelArtifactPaths.push(cadArtifactPath);
     const printPlates = reportPrintPlates(report).map((plate) => ({
       id: plate.id,
       stlPath: safeRelativePath(canonicalRoot, validated.artifactPaths[plate.stlKey]!)!,
@@ -136,6 +186,7 @@ export async function discoverModelBuilds(
     }));
     topLevelArtifactPaths.push(...printPlates.flatMap((plate) => [plate.stlPath, plate.threeMfPath]));
     builds.push({
+      ...(cadArtifactPath ? { cadArtifactPath } : {}),
       artifactPaths,
       displayPreviewPath,
       modelId:

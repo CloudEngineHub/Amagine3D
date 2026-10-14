@@ -65,16 +65,6 @@ function sha256(value: string | Buffer): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function safeTopLevelPath(path: string, label: string): string {
-  if (path !== basename(path) || dirname(path) !== '.') {
-    throw new ParameterBuildError(
-      `${label} must be a top-level session artifact.`,
-      400,
-    );
-  }
-  return path;
-}
-
 function safeGeneratedArtifactPath(path: string, label: string): string {
   const segments = path.split(/[\\/]/u);
   if (
@@ -226,7 +216,7 @@ export async function parameterModelsForWorkspace(
     await discoverModelBuilds(workspaceRoot, availableArtifacts)
   ).filter(
     (build): build is ModelBuild & { sourcePath: string } =>
-      typeof build.sourcePath === 'string',
+      typeof build.sourcePath === 'string' && !build.legacy,
   );
   return Promise.all(
     builds.map(async (build) => {
@@ -275,8 +265,24 @@ async function requireCandidateFiles(
   const canonicalOutDir = await realpath(outDir);
   const paths = [...new Set([
     ...Object.values(candidate.artifactPaths).map((path) => relative(canonicalOutDir, path)),
+    ...Object.values(candidate.inputPaths).filter((path) => path.startsWith(canonicalOutDir + sep)).map((path) => relative(canonicalOutDir, path)),
     build.reportPath,
   ])];
+  // BuildSession creates a new scene with bound feature witnesses in this job.
+  // Include those inputs in the same transaction as the model they describe.
+  if (candidate.inputPaths.scene?.startsWith(canonicalOutDir + sep)) {
+    const scene = JSON.parse(await readFile(candidate.inputPaths.scene, 'utf8'));
+    const collect = (value: unknown) => {
+      if (!value || typeof value !== 'object') return;
+      const ref = value as Record<string, unknown>;
+      if (typeof ref.path === 'string' && typeof ref.sha256 === 'string') {
+        const path = resolve(dirname(candidate.inputPaths.scene!), ref.path);
+        if (path.startsWith(canonicalOutDir + sep)) paths.push(relative(canonicalOutDir, path));
+      }
+      Object.values(ref).forEach(collect);
+    };
+    collect(scene);
+  }
   for (const path of paths) {
     safeGeneratedArtifactPath(path, 'Generated artifact');
     try {
@@ -289,7 +295,7 @@ async function requireCandidateFiles(
       );
     }
   }
-  return paths;
+  return [...new Set(paths)];
 }
 
 function rebaseReportPaths(
@@ -322,6 +328,15 @@ function rebaseReportPaths(
   return value;
 }
 
+function absoluteFileBindings(value: unknown, baseDir: string): unknown {
+  if (Array.isArray(value)) return value.map((item) => absoluteFileBindings(item, baseDir));
+  if (!value || typeof value !== 'object') return value;
+  const record = value as Record<string, unknown>;
+  return Object.fromEntries(Object.entries(record).map(([key, item]) => [key,
+    key === 'path' && typeof item === 'string' && typeof record.sha256 === 'string'
+      ? resolve(baseDir, item) : absoluteFileBindings(item, baseDir)]));
+}
+
 async function prepareCandidateReport(
   reportPath: string,
   outDir: string,
@@ -329,6 +344,7 @@ async function prepareCandidateReport(
   sourcePath: string,
   sourceHash: string,
   values: Record<string, number>,
+  destinationRoot = workspaceRoot,
 ): Promise<void> {
   const raw = JSON.parse(await readFile(reportPath, 'utf8')) as Record<
     string,
@@ -336,10 +352,11 @@ async function prepareCandidateReport(
   >;
   const canonicalOutDir = await realpath(outDir);
   const canonicalWorkspaceRoot = await realpath(workspaceRoot);
+  const canonicalDestinationRoot = await realpath(destinationRoot);
   const report = rebaseReportPaths(
     raw,
     [...new Set([outDir, canonicalOutDir])],
-    canonicalWorkspaceRoot,
+    canonicalDestinationRoot,
   ) as Record<string, unknown>;
   const rawArtifacts = raw.artifacts as Record<string, unknown> | undefined;
   const rawAuditReference = rawArtifacts?.exportAudit as
@@ -381,7 +398,7 @@ async function prepareCandidateReport(
     const audit = rebaseReportPaths(
       rawAudit,
       [...new Set([outDir, canonicalOutDir])],
-      canonicalWorkspaceRoot,
+      canonicalDestinationRoot,
     );
     const auditPayload = `${JSON.stringify(audit, null, 2)}\n`;
     await writeFile(auditPath, auditPayload, 'utf8');
@@ -398,9 +415,31 @@ async function prepareCandidateReport(
         422,
       );
     }
-    auditReference.path = join(canonicalWorkspaceRoot, auditRelativePath);
+    auditReference.path = join(canonicalDestinationRoot, auditRelativePath);
     auditReference.sha256 = sha256(auditPayload);
     backendData.exportAudit = audit;
+  }
+  const displayScene = (rawArtifacts?.['step:display'] as Record<string, unknown> | undefined)?.scene as { path: string; sha256: string } | undefined;
+  if (displayScene) {
+    const path = await realpath(displayScene.path);
+    const local = relative(canonicalOutDir, path);
+    safeGeneratedArtifactPath(local, 'STEP display scene');
+    const bytes = await readFile(path);
+    if (sha256(bytes) !== displayScene.sha256) throw new ParameterBuildError('STEP display scene changed.', 422);
+    const scene = rebaseReportPaths(JSON.parse(bytes.toString('utf8')), [...new Set([outDir, canonicalOutDir])], canonicalDestinationRoot);
+    const payload = JSON.stringify(scene) + '\n';
+    await writeFile(path, payload, 'utf8');
+    const artifact = (report.artifacts as Record<string, Record<string, unknown>>)['step:display']!;
+    artifact.scene = { path: join(canonicalDestinationRoot, local), sha256: sha256(payload) };
+  }
+  const rawScene = (raw.inputs as Record<string, { path: string; sha256: string }> | undefined)?.scene;
+  if (rawScene) {
+    const path = await realpath(resolve(dirname(reportPath), rawScene.path));
+    if (path.startsWith(canonicalOutDir + sep)) {
+      const payload = JSON.stringify(rebaseReportPaths(absoluteFileBindings(JSON.parse(await readFile(path, 'utf8')), dirname(path)), [...new Set([outDir, canonicalOutDir])], canonicalDestinationRoot), null, 2) + '\n';
+      await writeFile(path, payload, 'utf8');
+      (report.inputs as Record<string, unknown>).scene = { ...rawScene, path: join(canonicalDestinationRoot, relative(canonicalOutDir, path)), sha256: sha256(payload) };
+    }
   }
   if (!report.inputs || typeof report.inputs !== 'object') {
     throw new ParameterBuildError(
@@ -432,6 +471,7 @@ async function prepareCandidateReport(
 async function promoteFiles(
   files: Array<{ from: string; to: string }>,
   backupDir: string,
+  verify?: () => Promise<void>,
 ): Promise<void> {
   await mkdir(backupDir, { recursive: true });
   const backups: Array<{ from: string; to: string }> = [];
@@ -452,6 +492,7 @@ async function promoteFiles(
       await rename(file.from, file.to);
       installed.push(file.to);
     }
+    await verify?.();
   } catch (error) {
     await Promise.all(installed.map((path) => rm(path, { force: true })));
     for (const backup of [...backups].reverse()) {
@@ -467,6 +508,7 @@ async function executeParameterBuild(
   workspaceRoot: string,
   outDir: string,
   values: Record<string, number>,
+  intentPath?: string,
 ): Promise<void> {
   try {
     await runJsonProcess(
@@ -479,6 +521,7 @@ async function executeParameterBuild(
           ...process.env,
           AMAGINE3D_OUTPUT_DIR: outDir,
           AMAGINE3D_PARAMETER_OVERRIDES: JSON.stringify(values),
+          ...(intentPath ? { AMAGINE3D_INTENT_PATH: intentPath, AMAGINE3D_SCENE_PATH: join(outDir, 'parameter_scene.json') } : {}),
           MPLBACKEND: 'Agg',
           PYTHONPATH: [PUBLIC_RUNTIME_ROOT, process.env.PYTHONPATH]
             .filter(Boolean)
@@ -502,8 +545,8 @@ export async function rebuildModelWithParameters(options: {
   workspaceRoot: string;
 }): Promise<void> {
   const { pythonExecutable, request, workspaceRoot } = options;
-  safeTopLevelPath(request.sourcePath, 'Model source');
-  safeTopLevelPath(request.primaryPreviewPath, 'Top-level print root');
+  safeGeneratedArtifactPath(request.sourcePath, 'Model source');
+  safeGeneratedArtifactPath(request.primaryPreviewPath, 'Print root');
   const artifacts = await scanArtifacts(workspaceRoot);
   const build = (await discoverModelBuilds(workspaceRoot, artifacts)).find(
     (candidate) =>
@@ -512,14 +555,18 @@ export async function rebuildModelWithParameters(options: {
   );
   if (!build) {
     throw new ParameterBuildError(
-      'The selected artifact is not a recognized top-level print root.',
+      'The selected artifact is not a recognized print root.',
       409,
     );
   }
   build.artifactPaths.forEach((path) =>
     safeGeneratedArtifactPath(path, 'Model artifact'),
   );
-  safeTopLevelPath(build.reportPath, 'Build report');
+  safeGeneratedArtifactPath(build.reportPath, 'Build report');
+  const validated = await validateUnifiedBuildReport(workspaceRoot, join(workspaceRoot, build.reportPath));
+  if (!validated) throw new ParameterBuildError('Build evidence changed; reload before rebuilding.', 409);
+  const destinationRoot = dirname(validated.reportPath);
+  const stagedBuild = { ...build, reportPath: basename(build.reportPath) };
   const sourcePath = join(workspaceRoot, request.sourcePath);
   const source = await readFile(sourcePath, 'utf8');
   if (sha256(source) !== request.sourceHash) {
@@ -548,9 +595,10 @@ export async function rebuildModelWithParameters(options: {
       workspaceRoot,
       outDir,
       request.values,
+      validated.inputPaths.intent,
     );
-    const candidatePaths = await requireCandidateFiles(outDir, build, workspaceRoot);
-    const candidateReportPath = join(outDir, build.reportPath);
+    const candidatePaths = await requireCandidateFiles(outDir, stagedBuild, workspaceRoot);
+    const candidateReportPath = join(outDir, stagedBuild.reportPath);
     await prepareCandidateReport(
       candidateReportPath,
       outDir,
@@ -558,17 +606,22 @@ export async function rebuildModelWithParameters(options: {
       request.sourcePath,
       rewrittenSourceHash,
       request.values,
+      destinationRoot,
     );
     await writeFile(stagedSourcePath, rewrittenSource, 'utf8');
     await promoteFiles(
       [
         ...candidatePaths.map((path) => ({
           from: join(outDir, path),
-          to: join(workspaceRoot, path),
+          to: join(destinationRoot, path),
         })),
         { from: stagedSourcePath, to: sourcePath },
       ],
       backupDir,
+      async () => {
+        if (!await validateUnifiedBuildReport(workspaceRoot, join(destinationRoot, stagedBuild.reportPath)))
+          throw new ParameterBuildError('Published parameter evidence did not verify; the previous files were restored.', 422);
+      },
     );
   } finally {
     await rm(jobRoot, { force: true, recursive: true });

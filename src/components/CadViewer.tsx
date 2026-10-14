@@ -18,11 +18,11 @@ import {
   type Object3D,
 } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { ThreeMFLoader } from 'three/examples/jsm/loaders/3MFLoader.js';
 
 import styles from './CadViewer.module.css';
+import { parseStepPreview, stepPreviewUrl } from '../lib/step-preview';
 import { formatBytes } from '../lib/format';
 import { referenceVisibility, type ReferenceComponentInfo } from '../lib/reference-visibility';
 import type { ArtifactSummary } from '../types';
@@ -108,12 +108,11 @@ async function parseModel(
       }),
     );
   }
-  if (artifact.format === 'glb') {
-    const gltf = await new GLTFLoader().parseAsync(buffer, '');
-    return gltf.scene;
+  if (artifact.format === 'step') {
+    return parseStepPreview(JSON.parse(new TextDecoder().decode(buffer)), artifact.sha256);
   }
   if (artifact.format === '3mf') return new ThreeMFLoader().parse(buffer);
-  throw new Error('Browser preview supports STL, 3MF, and GLB.');
+  throw new Error('Browser preview supports STEP, STL and 3MF.');
 }
 
 function ToolButton({
@@ -175,7 +174,7 @@ export function CadViewer({
 
   const statusText =
     state === 'ready'
-      ? `${triangles.toLocaleString()} triangles · ${artifact?.format === 'glb' ? 'assembly preview' : 'print mesh'}`
+      ? `${triangles.toLocaleString()} triangles · ${artifact?.format === 'step' ? 'assembly preview' : 'print mesh'}`
       : state === 'loading'
         ? 'Reading model data…'
         : state === 'error'
@@ -203,7 +202,7 @@ export function CadViewer({
       setState(artifact ? 'error' : 'empty');
       setError(
         artifact
-          ? 'Browser preview supports STL, 3MF, and GLB display artifacts.'
+          ? 'Browser preview supports STEP, STL and 3MF display artifacts.'
           : '',
       );
       return;
@@ -307,9 +306,9 @@ export function CadViewer({
     setTriangles(0);
     setState('loading');
     setError('');
-    void fetch(artifact.url, { signal: controller.signal })
+    void fetch(artifact.format === 'step' ? stepPreviewUrl(artifact.url, artifact.sha256) : artifact.url, { signal: controller.signal })
       .then((response) => {
-        if (!response.ok) throw new Error(`Unable to read model (${String(response.status)})`);
+        if (!response.ok) throw new Error(`Unable to prepare model (${String(response.status)})`);
         return response.arrayBuffer();
       })
       .then((buffer) => parseModel(artifact, buffer))
@@ -323,7 +322,7 @@ export function CadViewer({
         root.add(loaded);
         model = root;
         scene.add(root);
-        if (artifact.format === 'glb') {
+        if (artifact.format === 'step') {
           references = referenceVisibility(root);
           references.setHidden(hideReferencesRef.current);
           setReferenceComponents(references.info);
@@ -406,9 +405,10 @@ export function CadViewer({
           </ToolButton>
         </div>
 
+        {state !== 'ready' && artifact?.previewImageUrl ? <img className={styles.previewImage} src={artifact.previewImageUrl} alt="CAD preview" /> : null}
         {state === 'empty' ? (
           <StatePanel
-            detail="Load a run with an STL, 3MF, or GLB preview artifact."
+            detail="Load a run with a STEP, STL or 3MF preview artifact."
             title="No model loaded"
             tone="empty"
           />

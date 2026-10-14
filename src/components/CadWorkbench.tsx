@@ -164,7 +164,8 @@ export function CadWorkbench({
               (model) =>
                 model.primaryPreviewPath === selectedArtifact.path ||
                 model.displayPreviewPath === selectedArtifact.path ||
-                model.artifactPaths.includes(selectedArtifact.path),
+                model.artifactPaths.includes(selectedArtifact.path) ||
+                (model.modelId === selectedArtifact.modelId && model.runId === selectedArtifact.buildId),
             )
           : undefined,
       [parameterModels, selectedArtifact],
@@ -176,7 +177,7 @@ export function CadWorkbench({
               ({ path }) => path === activeParameterModel.displayPreviewPath,
             )
           : selectedArtifact?.kind === 'model' &&
-              selectedArtifact.format === 'glb'
+              selectedArtifact.format === 'step'
             ? selectedArtifact
             : undefined) ?? preferredDisplayPreviewArtifact(artifacts),
       [activeParameterModel, artifacts, selectedArtifact],
@@ -190,6 +191,8 @@ export function CadWorkbench({
       : displayPreviewArtifact ?? printPreviewArtifact;
     const showingPrintPreview =
       previewArtifact?.format === '3mf' || previewArtifact?.format === 'stl';
+    const cadArtifact = useMemo(() => artifacts.filter((artifact) => artifact.purpose === 'cad-model' &&
+      artifact.primary && artifact.inputsCurrent !== false).sort((a, b) => Date.parse(b.modifiedAt) - Date.parse(a.modifiedAt))[0], [artifacts]);
 
     function activateSession(nextSessionId: string) {
       sessionScopeRef.current.activate(nextSessionId);
@@ -326,7 +329,7 @@ export function CadWorkbench({
       setSelectedPath(
         defaultPreviewArtifact(nextArtifacts)?.path ??
           fileSectionArtifacts(nextArtifacts)[0]?.path ??
-          nextArtifacts[0]?.path,
+          undefined,
       );
     }
 
@@ -375,7 +378,7 @@ export function CadWorkbench({
             ? preferredArtifactPath
             : defaultPreviewArtifact(detail.artifacts)?.path ??
                 fileSectionArtifacts(detail.artifacts)[0]?.path ??
-                detail.artifacts[0]?.path;
+                undefined;
         setSelectedPath(initialArtifact);
         const selected = detail.artifacts.find(
           ({ path }) => path === initialArtifact,
@@ -413,7 +416,7 @@ export function CadWorkbench({
           return (
             defaultPreviewArtifact(next.artifacts)?.path ??
             fileSectionArtifacts(next.artifacts)[0]?.path ??
-            next.artifacts[0]?.path
+            undefined
           );
         });
       } finally {
@@ -943,6 +946,7 @@ export function CadWorkbench({
           </div>
 
           <PreviewPanel
+            cadArtifact={cadArtifact}
             connectionStatus={connectionStatus}
             language={language}
             onTogglePrintPreview={() => setPrintPreview((enabled) => !enabled)}

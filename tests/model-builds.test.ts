@@ -23,7 +23,8 @@ test('discovers every plate and rejects missing, duplicated, or stale plate evid
       { id: '01', stlPath: 'pair-plate-01.stl', threeMfPath: 'pair-plate-01.3mf' },
       { id: '02', stlPath: 'pair-plate-02.stl', threeMfPath: 'pair-plate-02.3mf' },
     ]);
-    assert.equal(build?.topLevelArtifactPaths.length, 5);
+    assert.equal(build?.topLevelArtifactPaths.length, 6);
+    assert.equal(build?.cadArtifactPath, 'pair-assemble.step');
     for (const modify of [
       (report: any) => { report.backendData.printPlates[1].parts = ['a']; },
       (report: any) => { report.backendData.printPlates[1].geometry.volumeMm3 = 20; },
@@ -64,11 +65,11 @@ test('uses the artifact matrix to choose the unified print root', async () => {
     assert.equal(byId.get('color-case')?.primaryPreviewPath, 'color-case.3mf');
     assert.equal(
       byId.get('color-case')?.displayPreviewPath,
-      'color-case-display.glb',
+      'color-case-display.step',
     );
     assert.deepEqual(
       byId.get('color-case')?.topLevelArtifactPaths.sort(),
-      ['color-case-display.glb', 'color-case.3mf'],
+      ['color-case-display.step', 'color-case.3mf', 'color-case.step'],
     );
     assert.equal(byId.get('plain-case')?.sourcePath, 'plain-case.py');
   } finally {
@@ -76,7 +77,7 @@ test('uses the artifact matrix to choose the unified print root', async () => {
   }
 });
 
-test('discovers a Hybrid build without inventing an editable source', async () => {
+test('rejects a mesh-backed result without genuine STEP geometry', async () => {
   const root = await mkdtemp(join(tmpdir(), 'amagine-hybrid-build-'));
   try {
     await writeUnifiedBuildFixture({
@@ -85,9 +86,7 @@ test('discovers a Hybrid build without inventing an editable source', async () =
       root,
     });
     const [build] = await discoverModelBuilds(root, await scanArtifacts(root));
-    assert.equal(build?.primaryPreviewPath, 'dragon.3mf');
-    assert.equal(build?.displayPreviewPath, 'dragon-display.glb');
-    assert.equal(build?.sourcePath, undefined);
+    assert.equal(build, undefined);
   } finally {
     await rm(root, { force: true, recursive: true });
   }

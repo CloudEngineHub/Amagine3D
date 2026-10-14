@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { BoxGeometry, Group, Mesh, MeshBasicMaterial } from 'three';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { parseStepPreview } from '../src/lib/step-preview.ts';
 
 import { referenceVisibility } from '../src/lib/reference-visibility.ts';
 
@@ -103,41 +103,16 @@ test('reference visibility controllers stay scoped to their own loaded model', (
   assert.equal(oldReference.visible, false);
 });
 
-test('reads role and feature metadata from mesh extras in an actual binary GLB', async () => {
-  const positions = new Float32Array([0, 0, 0, 10, 0, 0, 0, 10, 0]);
+test('STEP preview preserves role and feature identity without guessing from labels', () => {
   const metadata = { role: 'display-only', physicalFeatureRef: 'lcd-1' };
-  const json = Buffer.from(JSON.stringify({
-    asset: { version: '2.0' },
-    scene: 0,
-    scenes: [{ nodes: [0] }],
-    nodes: [{ mesh: 0 }],
-    meshes: [{ extras: { amagine3d: metadata }, primitives: [{ attributes: { POSITION: 0 } }] }],
-    buffers: [{ byteLength: positions.byteLength }],
-    bufferViews: [{ buffer: 0, byteLength: positions.byteLength }],
-    accessors: [{
-      bufferView: 0, componentType: 5126, count: 3, type: 'VEC3',
-      min: [0, 0, 0], max: [10, 10, 0],
-    }],
-  }));
-  const jsonLength = Math.ceil(json.byteLength / 4) * 4;
-  const glb = Buffer.alloc(12 + 8 + jsonLength + 8 + positions.byteLength);
-  glb.writeUInt32LE(0x46546c67, 0);
-  glb.writeUInt32LE(2, 4);
-  glb.writeUInt32LE(glb.byteLength, 8);
-  glb.writeUInt32LE(jsonLength, 12);
-  glb.writeUInt32LE(0x4e4f534a, 16);
-  glb.fill(0x20, 20, 20 + jsonLength);
-  json.copy(glb, 20);
-  glb.writeUInt32LE(positions.byteLength, 20 + jsonLength);
-  glb.writeUInt32LE(0x004e4942, 24 + jsonLength);
-  Buffer.from(positions.buffer).copy(glb, 28 + jsonLength);
-
-  const buffer = new Uint8Array(glb).buffer;
-  const loaded = await new GLTFLoader().parseAsync(buffer, '');
-  const controller = referenceVisibility(loaded.scene);
+  const loaded = parseStepPreview({ schema: 'a3d-step-preview/v1', units: 'mm', up: 'Z', objects: [{
+    id: 'part-looking-reference', positions: [0, 0, 0, 10, 0, 0, 0, 10, 0], indices: [0, 1, 2],
+    normals: [0, 0, 1, 0, 0, 1, 0, 0, 1], metadata,
+    appearance: { baseColor: '#abcdef', metallic: 0, roughness: 0.58 },
+  }] });
+  const controller = referenceVisibility(loaded);
   assert.equal(controller.info.referenceMeshes, 1);
-  const loadedMesh = loaded.scene.children[0] as Mesh;
-  assert.deepEqual(loadedMesh.userData.amagine3d, metadata);
+  assert.deepEqual(loaded.children[0]!.userData.amagine3d, metadata);
   controller.setHidden(true);
-  assert.equal(loadedMesh.visible, false);
+  assert.equal(loaded.children[0]!.visible, false);
 });

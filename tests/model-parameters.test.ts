@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
 import { unzipSync } from 'fflate';
@@ -80,7 +80,7 @@ export_assembly(parts, "plate_pair", source_path=__file__, intent_path=${JSON.st
         const [build] = await discoverModelBuilds(root, await scanArtifacts(root));
         assert.ok(build, 'promoted report must retain valid hashes and bindings');
         assert.equal(build.printPlates?.length ?? 1, expectedCount);
-        assert.equal(build.topLevelArtifactPaths.length, 1 + expectedCount * 2);
+        assert.equal(build.topLevelArtifactPaths.length, 2 + expectedCount * 2);
         assert.equal(build.primaryPreviewPath, expectedCount === 1 ? 'plate_pair.3mf' : 'plate_pair-plate-01.3mf');
         assert.ok(build.artifactPaths.every((path) => !path.startsWith('.amagine-state')));
         if (build.printPlates) {
@@ -105,6 +105,61 @@ export_assembly(parts, "plate_pair", source_path=__file__, intent_path=${JSON.st
 
 function sha256(value: string | Buffer): string {
   return createHash('sha256').update(value).digest('hex');
+}
+
+test('managed compile outputs in their attempt directory remain adjustable through STEP', { skip: !existsSync(VENV_PYTHON) }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'amagine-managed-parameters-'));
+  try {
+    const examples = join(PROJECT_ROOT, 'skills/a3d-text/examples');
+    for (const suffix of ['build', 'intent']) {
+      let body = await readFile(join(examples, `simple_brep_${suffix}.py`), 'utf8');
+      body = suffix === 'build' ? body.replace('FLOOR_Z =', 'from cad_helpers import parameter\nEDGE_RADIUS = parameter("edge-radius", 2.0, min_value=0.5, max_value=3.0, step=0.5, unit="mm", label="Edge radius", affects=("simple-brep",))\nFLOOR_Z =') : body.replace('with 2 mm edge rounds', 'with adjustable 0.5 to 3 mm edge rounds');
+      await writeFile(join(root, `simple_brep_${suffix}.py`), body);
+    }
+    const cli = join(PROJECT_ROOT, 'bin/a3d.mjs');
+    await execFileAsync('node', [cli, 'profile', '--machine', 'a1-mini', '--nozzle', '0.4', '--tool', '0', '--out', 'simple_brep_printer-profile.json'], { cwd: root });
+    await execFileAsync(VENV_PYTHON, ['simple_brep_intent.py'], { cwd: root, env: { ...process.env, AMAGINE3D_RUNTIME_DIR: join(PROJECT_ROOT, 'skills/a3d-public') } });
+    await execFileAsync('node', [cli, 'agent', 'build', JSON.stringify({ phase: 'compile', source: 'simple_brep_build.py', intent: 'simple_brep_intent.json', scene: 'simple_brep_scene.json' })], { cwd: root, maxBuffer: 2 * 1024 * 1024 });
+    const [initial] = await parameterModelsForWorkspace(root, VENV_PYTHON);
+    assert.ok(initial?.displayPreviewPath.startsWith('cad-builds/'));
+    const initialReport = JSON.parse(await readFile(join(root, initial.reportPath), 'utf8'));
+    await rebuildModelWithParameters({ workspaceRoot: root, pythonExecutable: VENV_PYTHON, request: { sourcePath: initial.sourcePath, sourceHash: initial.sourceHash, primaryPreviewPath: initial.primaryPreviewPath, values: { 'edge-radius': 2.5 } } });
+    const [rebuilt] = await parameterModelsForWorkspace(root, VENV_PYTHON);
+    assert.ok(rebuilt);
+    assert.equal(rebuilt.displayPreviewPath, initial.displayPreviewPath);
+    assert.notEqual(rebuilt.sourceHash, initial.sourceHash);
+    await verifyDisplayDependencies(root, rebuilt);
+    const report = JSON.parse(await readFile(join(root, rebuilt.reportPath), 'utf8'));
+    assert.equal(rebuilt.parameters.find((parameter) => parameter.id === 'edge-radius')?.value, 2.5);
+    assert.ok(report.parts['simple-brep'].semantic.volumeMm3 < initialReport.parts['simple-brep'].semantic.volumeMm3, 'larger rounds change the independently audited geometry');
+    assert.ok(report.inputs.scene.path.endsWith('parameter_scene.json'));
+    const scene = JSON.parse(await readFile(report.inputs.scene.path, 'utf8'));
+    const verify = async (value: any): Promise<void> => {
+      if (!value || typeof value !== 'object') return;
+      if (typeof value.path === 'string' && typeof value.sha256 === 'string')
+        assert.equal(sha256(await readFile(resolve(join(root, rebuilt.reportPath, '..'), value.path))), value.sha256);
+      for (const item of Object.values(value)) await verify(item);
+    };
+    await verify(scene);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+async function verifyDisplayDependencies(root: string, model: { artifactPaths: string[]; displayPreviewPath?: string }): Promise<string[]> {
+  assert.ok(model.displayPreviewPath);
+  const scenePath = model.displayPreviewPath + '.scene.json';
+  const scene = JSON.parse(await readFile(join(root, scenePath), 'utf8'));
+  assert.equal(scene.schema, 'a3d-step-display/v1');
+  assert.equal(scene.step.sha256, sha256(await readFile(join(root, model.displayPreviewPath))));
+  const dependencies = new Set<string>([scenePath]);
+  const canonicalRoot = await realpath(root);
+  for (const object of scene.objects) {
+    const path = relative(canonicalRoot, resolve(canonicalRoot, object.step.path));
+    assert.ok(!path.startsWith('..') && !path.includes('.amagine-state'), 'display object stays in the published workspace');
+    assert.equal(object.step.sha256, sha256(await readFile(join(root, path))));
+    dependencies.add(path);
+  }
+  for (const path of dependencies) assert.ok(model.artifactPaths.includes(path), 'transaction includes ' + path);
+  return model.artifactPaths.filter((path) => !dependencies.has(path)).sort();
 }
 
 interface EvidenceFeature {
@@ -276,7 +331,7 @@ async function writeEvidenceInputs(options: {
       })),
       parts: parts.map((id) => ({ id, representationMaster: 'brep' })),
       revision: 'parameter-test-r1',
-      schema: 'evidence-semantic-scene/v1',
+      schema: 'evidence-semantic-scene/v2',
       units: 'mm',
     }),
   );
@@ -317,7 +372,7 @@ output = Path(os.environ.get("AMAGINE3D_OUTPUT_DIR", "."))
 output.mkdir(parents=True, exist_ok=True)
 stl = output / "model.stl"
 step = output / "model.step"
-display_glb = output / "model-display.glb"
+display_step = output / "model-display.step"
 environment = (
     f"PYTHONIOENCODING={os.environ.get('PYTHONIOENCODING')};"
     f"PYTHONUTF8={os.environ.get('PYTHONUTF8')}"
@@ -327,7 +382,7 @@ stl.write_text(
     encoding="utf-8",
 )
 step.write_text(f"ISO-10303-21 {SIZE}\\n", encoding="utf-8")
-display_glb.write_bytes(b"glTF" + bytes(str(SIZE), encoding="utf-8"))
+display_step.write_bytes(b"glTF" + bytes(str(SIZE), encoding="utf-8"))
 digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
 source = Path(__file__).resolve()
 source_dir = source.parent
@@ -348,6 +403,13 @@ observed_stl = {
     "watertight": True,
     "windingConsistent": True,
 }
+display_scene = output / "model-display.step.scene.json"
+display_scene.write_text(json.dumps({
+    "schema": "a3d-step-display/v1", "units": "mm", "step": {"path": str(display_step.resolve()), "sha256": digest(display_step)},
+    "objects": [{"name": NAME, "role": "manufactured", "coordinateFrame": "semantic", "transformApplied": True,
+                 "step": {"path": str(display_step.resolve()), "sha256": digest(display_step)}, "geometry": expected_geometry,
+                 "appearance": {"baseColor": "#6891B5", "metallic": 0, "roughness": 0.58}}],
+}), encoding="utf-8")
 export_audit = {
     "artifacts": {
         "stl:model": {
@@ -359,16 +421,16 @@ export_audit = {
             "pass": True, "path": str(step.resolve()), "reader": "build123d-occt",
             "sha256": digest(step), "type": "step",
         },
-        "glb:display": {
+        "step:display": {
             "errors": [], "expectedNodes": [NAME],
             "observed": {"geometryCount": 1, "nodes": [NAME]},
-            "pass": True, "path": str(display_glb.resolve()), "reader": "trimesh-gltf",
-            "sha256": digest(display_glb), "type": "glb",
+            "pass": True, "path": str(display_step.resolve()), "reader": "build123d-occt",
+            "sha256": digest(display_step), "type": "step",
         },
     },
     "errors": [],
     "pass": True,
-    "schema": "evidence-export-audit/v1",
+    "schema": "evidence-export-audit/v2",
 }
 export_audit_path = output / "model_export-audit.json"
 export_audit_path.write_text(json.dumps(export_audit), encoding="utf-8")
@@ -377,7 +439,7 @@ report = {
     "artifactMatrix": {
         "parts": {
             NAME: {
-                "glb": "required",
+                "displayStep": "required",
                 "step": "required",
                 "stl": "required",
                 "threeMf": "not-applicable",
@@ -387,7 +449,7 @@ report = {
     "artifacts": {
         "stl:model": {"coordinateFrame": "part-print", "path": str(stl.resolve()), "sha256": digest(stl)},
         "step:model": {"coordinateFrame": "semantic", "path": str(step.resolve()), "sha256": digest(step)},
-        "glb:display": {"coordinateFrame": "semantic", "path": str(display_glb.resolve()), "sha256": digest(display_glb)},
+        "step:display": {"coordinateFrame": "semantic", "path": str(display_step.resolve()), "sha256": digest(display_step), "scene": {"path": str(display_scene.resolve()), "sha256": digest(display_scene)}},
         "exportAudit": {"path": str(export_audit_path.resolve()), "sha256": digest(export_audit_path)},
     },
     "autoScale": False,
@@ -430,7 +492,7 @@ report = {
     "inputs": {
         "intent": {"path": str(intent), "schema": "evidence-cad-intent/v5", "sha256": digest(intent)},
         "profile": {"path": str(profile), "schema": "evidence-bambu-printer-profile/v1", "sha256": digest(profile)},
-        "scene": {"path": str(scene), "revision": "parameter-fixture-r1", "schema": "evidence-semantic-scene/v1", "sha256": digest(scene)},
+        "scene": {"path": str(scene), "revision": "parameter-fixture-r1", "schema": "evidence-semantic-scene/v2", "sha256": digest(scene)},
         "source": {"path": str(source), "schema": "python-source/v1", "sha256": digest(source)},
     },
     "part": NAME,
@@ -445,7 +507,7 @@ report = {
     "revision": "parameter-fixture-r1",
     "runId": str(uuid4()),
     "scale": 1.0,
-    "schema": "evidence-a3d-build/v1",
+    "schema": "evidence-a3d-build/v2",
     "warnings": [],
 }
 (output / "model_report.json").write_text(json.dumps(report), encoding="utf-8")
@@ -487,7 +549,7 @@ async function writeInitialBuild(root: string): Promise<void> {
         sha256: sha256(intentPayload),
       },
       revision: 'parameter-fixture-r1',
-      schema: 'evidence-semantic-scene/v1',
+      schema: 'evidence-semantic-scene/v2',
     }),
   );
   await execFileAsync(PYTHON, ['model.py'], {
@@ -502,7 +564,7 @@ test('discovers only explicit parameter() declarations, including negative defau
     await writeInitialBuild(root);
     const [model] = await parameterModelsForWorkspace(root, PYTHON);
     assert.equal(model?.primaryPreviewPath, 'model.stl');
-    assert.equal(model?.displayPreviewPath, 'model-display.glb');
+    assert.equal(model?.displayPreviewPath, 'model-display.step');
     assert.equal(model?.parameters.length, 1);
     assert.deepEqual(model?.parameters[0], {
       affects: ['mounting-hole'],
@@ -660,7 +722,7 @@ test('does not expose a non-editable Hybrid build as a parameter model', async (
   try {
     const stlPath = join(root, 'mesh.stl');
     const threeMfPath = join(root, 'mesh.3mf');
-    const displayPath = join(root, 'mesh-display.glb');
+    const displayPath = join(root, 'mesh-display.step');
     await writeFile(stlPath, 'solid mesh\nendsolid mesh\n');
     await writeFile(threeMfPath, '3MF');
     await writeFile(displayPath, 'glTF');
@@ -670,7 +732,7 @@ test('does not expose a non-editable Hybrid build as a parameter model', async (
         artifactMatrix: {
           parts: {
             mesh: {
-              glb: 'required',
+              displayStep: 'required',
               step: 'not-applicable',
               stl: 'required',
               threeMf: 'required',
@@ -679,14 +741,14 @@ test('does not expose a non-editable Hybrid build as a parameter model', async (
         },
         artifacts: {
           '3mf': { path: threeMfPath },
-          'glb:display': { path: displayPath },
+          'step:display': { path: displayPath },
           stl: { path: stlPath },
         },
         backend: 'hybrid-mesh',
         inputs: {},
         part: 'mesh',
         pass: true,
-        schema: 'evidence-a3d-build/v1',
+        schema: 'evidence-a3d-build/v2',
       }),
     );
     assert.deepEqual(await parameterModelsForWorkspace(root, PYTHON), []);
@@ -748,7 +810,7 @@ if __name__ == "__main__":
       const [model] = await parameterModelsForWorkspace(root, VENV_PYTHON);
       assert.ok(model);
       assert.equal(model.primaryPreviewPath, 'parametric_box.3mf');
-      assert.equal(model.displayPreviewPath, 'parametric_box-display.glb');
+      assert.equal(model.displayPreviewPath, 'parametric_box-display.step');
       assert.equal(model.parameters[0]?.labelZh, '凹槽深度');
       assert.equal(model.parameters[0]?.groupZh, '局部特征');
       await rebuildModelWithParameters({
@@ -848,7 +910,7 @@ if __name__ == "__main__":
         sourcePath,
         join(root, 'resizable_box.stl'),
         join(root, 'resizable_box.step'),
-        join(root, 'resizable_box-display.glb'),
+        join(root, 'resizable_box-display.step'),
         join(root, 'resizable_box_report.json'),
       ];
       const retained = await Promise.all(retainedPaths.map((path) => readFile(path)));
@@ -942,9 +1004,9 @@ if __name__ == "__main__":
       const [model] = await parameterModelsForWorkspace(root, VENV_PYTHON);
       assert.ok(model);
       assert.equal(model.primaryPreviewPath, 'color_bar.3mf');
-      assert.equal(model.displayPreviewPath, 'color_bar-display.glb');
+      assert.equal(model.displayPreviewPath, 'color_bar-display.step');
       assert.deepEqual(
-        model.artifactPaths.slice().sort(),
+        await verifyDisplayDependencies(root, model),
         [
           '.amagine3d-internal/color_bar/color_bar-region-left.stl',
           '.amagine3d-internal/color_bar/color_bar-region-right.stl',
@@ -953,7 +1015,7 @@ if __name__ == "__main__":
           'color_bar.3mf',
           'color_bar.stl',
           'color_bar.step',
-          'color_bar-display.glb',
+          'color_bar-display.step',
           'color_bar_export-audit.json',
           'color_bar_material-plan.json',
         ].sort(),
@@ -968,6 +1030,9 @@ if __name__ == "__main__":
         },
         workspaceRoot: root,
       });
+      const [rebuilt] = await parameterModelsForWorkspace(root, VENV_PYTHON);
+      assert.ok(rebuilt);
+      await verifyDisplayDependencies(root, rebuilt);
       const report = JSON.parse(
         await readFile(join(root, 'color_bar_report.json'), 'utf8'),
       ) as {
@@ -1065,9 +1130,9 @@ if __name__ == "__main__":
       const [model] = await parameterModelsForWorkspace(root, VENV_PYTHON);
       assert.ok(model);
       assert.equal(model.primaryPreviewPath, 'shell_case.3mf');
-      assert.equal(model.displayPreviewPath, 'shell_case-display.glb');
+      assert.equal(model.displayPreviewPath, 'shell_case-display.step');
       assert.deepEqual(
-        model.artifactPaths.slice().sort(),
+        await verifyDisplayDependencies(root, model),
         [
           '.amagine3d-internal/shell_case/plate/shell_case-lower-shell.stl',
           '.amagine3d-internal/shell_case/plate/shell_case-top-lid.stl',
@@ -1078,7 +1143,7 @@ if __name__ == "__main__":
           'shell_case.3mf',
           'shell_case.stl',
           'shell_case-assemble.step',
-          'shell_case-display.glb',
+          'shell_case-display.step',
           'shell_case_export-audit.json',
           'shell_case_material-plan.json',
         ].sort(),
@@ -1093,6 +1158,9 @@ if __name__ == "__main__":
         },
         workspaceRoot: root,
       });
+      const [rebuilt] = await parameterModelsForWorkspace(root, VENV_PYTHON);
+      assert.ok(rebuilt);
+      await verifyDisplayDependencies(root, rebuilt);
       const report = JSON.parse(
         await readFile(join(root, 'shell_case_report.json'), 'utf8'),
       ) as {
