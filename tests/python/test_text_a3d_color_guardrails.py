@@ -61,7 +61,7 @@ COORDINATE_SYSTEM = {
 def _write_brep_scene(root: Path, intent_path: Path, part_name: str) -> Path:
     scene_path = root / f"{intent_path.stem}_scene.json"
     scene = {
-        "schema": "evidence-semantic-scene/v1",
+        "schema": "evidence-semantic-scene/v2",
         "revision": "color-test-rev-001",
         "intentRef": {
             "path": str(intent_path),
@@ -563,8 +563,9 @@ class ColorPipelineTests(unittest.TestCase):
                 faces=np.asarray([[0, 1, 2], [0, 2, 3]]),
                 process=False,
             )
-            display_path = root / "status-surface.ply"
-            display_mesh.export(display_path)
+            display_path = root / "status-surface.step"
+            from build123d import Rectangle, export_step
+            export_step(Pos(10, 5, 2.05) * Rectangle(4, 2).face(), display_path)
             scene["nodes"].extend(
                 [
                     {
@@ -577,7 +578,7 @@ class ColorPipelineTests(unittest.TestCase):
                         "recipe": {
                             "kind": "displayComponent",
                             "parameters": {
-                                "sourceMesh": display_path.name,
+                                "sourceStep": display_path.name,
                                 "appearance": {
                                     "baseColor": "#101418",
                                     "roughness": 0.2,
@@ -602,14 +603,18 @@ class ColorPipelineTests(unittest.TestCase):
         self.assertTrue(manifest_audit["pass"], manifest_audit)
         return report, profile_path, intent_path
 
-    def test_unified_report_print_package_display_glb_step_master_and_material_plan(self):
+    def test_unified_report_print_package_display_step_step_master_and_material_plan(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             report, _, intent_path = self._build_fixture(
                 root, include_display_component=True
             )
-            self.assertEqual(report["schema"], "evidence-a3d-build/v1")
+            self.assertEqual(report["schema"], "evidence-a3d-build/v2")
             self.assertEqual(report["backend"], "brep-color-regions")
+            from display_step import load_step_objects
+            objects, _ = load_step_objects(root / "tile-display.step")
+            regions = {obj["regionId"]: obj["ownerPart"] for obj, _ in objects if obj.get("regionId")}
+            self.assertEqual(regions, {"red": "tile", "blue": "tile"})
             self.assertTrue(report["backendData"]["exportAudit"]["pass"])
             self.assertEqual(
                 len(report["backendData"]["exportAudit"]["artifacts"]), 7
@@ -671,8 +676,8 @@ class ColorPipelineTests(unittest.TestCase):
             self.assertIn("region:red:semantic", report["artifacts"])
             self.assertIn("region:red:print", report["artifacts"])
             self.assertTrue((root / "tile.step").is_file())
-            self.assertTrue((root / "tile-display.glb").is_file())
-            display_artifact = report["artifacts"]["glb:display"]
+            self.assertTrue((root / "tile-display.step").is_file())
+            display_artifact = report["artifacts"]["step:display"]
             self.assertEqual(
                 set(display_artifact["readbackBaseColors"].values()),
                 {"#CC2233", "#2255CC", "#101418"},
@@ -1257,7 +1262,7 @@ class ColorPipelineTests(unittest.TestCase):
                 [
                     sys.executable,
                     str(SINGLE / "render_preview.py"),
-                    str(root / "tile-display.glb"),
+                    str(root / "tile-display.step"),
                     "--out",
                     str(root / "views.png"),
                     "--reference-view",
@@ -1273,7 +1278,7 @@ class ColorPipelineTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             render = json.loads(report_path.read_text())
-            self.assertEqual(render["schema"], "evidence-render/v2")
+            self.assertEqual(render["schema"], "evidence-render/v3")
             self.assertEqual(render["matched_view"]["name"], "bottom")
             self.assertEqual(
                 {tuple(mesh["preview_color_rgb"]) for mesh in render["meshes"]},

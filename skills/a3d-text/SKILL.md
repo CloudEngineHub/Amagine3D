@@ -5,180 +5,70 @@ description: Create or modify printable 3D models and their editable sources.
 
 # a3d-text
 
-Use public `a3d` commands in the session workspace. Keep editable build123d
-BRep source and STEP masters beside derived meshes; intent owns requirements
-and source owns controls.
-
-In final intent, give ordinary exterior dimensions their nominal value and ±0.1
-mm unless user tolerances or fits override it. Preserve fixed targets;
-use 0.01 mm check precision unless explicitly tighter.
+Read exactly `$AMAGINE3D_SKILL_DIR/SKILL.md` once; never substitute a cwd or global namesake.
+Examples live in `$AMAGINE3D_SKILL_DIR/examples/`; references in `$AMAGINE3D_RUNTIME_DIR/references/`.
+On continuation/compaction use `a3d agent context` and its nextInspect/nextDesignRead; reuse known contracts until capabilityVersion changes.
+Keep editable designs or build123d BRep source and STEP masters in the workspace. Intent owns requirements; source owns controls.
+Ordinary exterior dimensions use nominal ±0.1 mm, checks 0.01 mm precision, unless specified tolerances/fits override them. Never relax targets to pass QA.
 
 <!-- a3d-workflow:v2 classify > functional-draft > feedback > contract > compile > evidence-repair -->
 
-## 1. Classify and draft visible construction
+## Draft and review
 
-Read exactly `$AMAGINE3D_SKILL_DIR/SKILL.md` once; never substitute a cwd or
-global namesake. Before the first source edit, use only directly relevant
-`a3d guide TOPIC` or `a3d capabilities --symbol NAME` evidence. Do not preload
-deep references, final intent/profile, final plates or the full compiler before
-a visible draft.
+Prefer DSL for supported geometry, including electronic enclosures. Name the specific unsupported geometry/binding before Python fallback.
+Query only needed contracts in one batch: `a3d agent capabilities '{"designOps":["open_box","hole"]}'` (Python uses symbols).
+Results page by output size, not name count. Follow page.nextRequest with `a3d agent inspect`; do not preload all contracts or references.
+For a new DSL draft, this complete apply request is enough to start; consult `$AMAGINE3D_RUNTIME_DIR/references/parametric-design.md` for unfamiliar editing/operation details:
 
-For an existing model, preserve source/intent feature IDs and targets, then run:
-
-```bash
-a3d draft existing_build.py --intent existing_intent.json
+```json
+{"action":"apply","design":"model.a3d.json","baseRevision":null,"changes":[{"kind":"add","target":"params.wall","value":{"type":"length","value":2}},{"kind":"add","target":"parts.body","value":{"result":"@body.shell"}},{"kind":"add","target":"body.shell","value":{"op":"open_box","size":[80,60,30],"wall":"=wall","floor":2}}]}
 ```
 
-For a new ordinary solid, copy the smallest seed:
+Save requests in the workspace and run `a3d agent design --args-file edits.json`. Keep stable IDs; batch related edits and use the returned revision.
+Updates use `{"kind":"update","target":"params.wall","set":{"value":2.4}}`; later apply requests require baseRevision. Do not replace the whole design for local repairs.
+Expressions require matching units (`=height - mm(2)`); references use `@body.shell`. Frame local v = normal × u; u and normal are orthogonal.
+For Python, read only `$AMAGINE3D_SKILL_DIR/examples/simple_brep_build.py` or, when assembly changes topology, `$AMAGINE3D_SKILL_DIR/examples/installed_module_draft.py`.
+Use BuildSession with part_names before intent and owned constructionFeatures. Skip Python authoring/intent-writer examples in DSL mode.
+Reserve cavity, openings, support, retention, fastener and insertion/service paths before finishing; keep unknown dimensions reversible.
+For construction decisions that need more detail, read `$AMAGINE3D_RUNTIME_DIR/references/construction-feedback.md`.
 
 ```bash
-cp "$AMAGINE3D_SKILL_DIR/examples/simple_brep_build.py" ./model_build.py
+a3d agent build '{"phase":"draft","design":"model.a3d.json","revision":"REVISION"}'
+a3d agent build '{"phase":"draft","source":"model_build.py"}'
 ```
 
-First classify the task. It is **assembly-critical** when manufactured parts,
-installed components, service access, closure, locator, retention, fasteners,
-motion, mating fit or through openings can change envelope or topology. Mere
-seams, color regions and grooves are not.
+View the returned preview with view_image and edit from actual form/function feedback. Failed-operation diagnostic images may show only prior valid geometry.
+If artifactStages reports display failure after passed cadExport, keep the bound STEP and use `a3d agent display '{"report":"RUN.json","sha256":"SHA"}'`; localize the issue before changing manufacturing geometry.
+At `awaiting-preview`, manufacturing has passed but PNG evidence is incomplete. Use context's `nextDisplay`; display retry verifies and reuses the original manufacturing proof without rerunning source or checks. Automatic pass still requires visual review.
+Save up to six observations/todo items with `a3d agent checkpoint` bound to the run report. It records agent feedback, never CAD acceptance or proof that an image was viewed.
+A draft does not establish installation, final dimensions or printability. Repeat builds after changed inputs, new evidence or incomplete/failed attempts.
 
-An ordinary appearance-led draft needs only its main envelope, identity-bearing
-volumes, silhouette, proportions and major layout. For assembly-critical work,
-start from the installed-module seed when useful:
+## Contract and compile
+
+After the functional skeleton is stable, declare independent intent, validate and run the first compile before more cosmetic edits. Check LCD support/stop/passage and screw clearance/pilot/engagement now.
+DSL uses `$AMAGINE3D_SKILL_DIR/examples/intent.example.json` for a solid or `$AMAGINE3D_SKILL_DIR/examples/installed_module_intent.json` for collar/screw/component assemblies.
+The assembly JSON pairs with `$AMAGINE3D_SKILL_DIR/examples/installed_module.a3d.json`; read that larger design only when its construction bindings are needed.
+Specify independent targets and chosen printer/profile; preserve owners, physical feature bindings and access. Do not copy failed geometry into accepted targets.
+Python final authoring uses `$AMAGINE3D_RUNTIME_DIR/references/authoring-example.md`. Fastening/installation details use multipart-connections.md/installation-checks.md under the runtime references directory when needed.
+Validate before compile: `a3d agent validate '{"design":"model.a3d.json","revision":"REVISION","intent":"model_intent.json"}'` (Python: intent/source/available scene).
+cut/pocket/hole/open_box requirements describe cutters. Each physical part needs solid/separate material in its result chain; observe a pure subtractive final body with zero-offset translate bound to an existing final-body intent feature, then select that result. No additional shape is needed.
+Frozen intent files are immutable, including their bytes. For a legitimate revision use a new file linked to its parent SHA/reason; read `$AMAGINE3D_RUNTIME_DIR/references/evidence-contract.md` only for that revision.
+Cosmetic edits retain frozen dimensions and functional targets; compare narrative acceptance with actual controls. Derive installation witnesses from the unchanged component envelope and complete actual path, never reduce them to silence collisions.
 
 ```bash
-cp "$AMAGINE3D_SKILL_DIR/examples/installed_module_draft.py" ./model_build.py
+a3d agent build '{"phase":"compile","design":"model.a3d.json","revision":"REVISION","intent":"model_intent.json"}'
+a3d agent build '{"phase":"compile","source":"model_build.py","intent":"model_intent.json","scene":"model_scene.json"}'
 ```
 
-Before its first draft, add a reversible **functional skeleton**: provisional
-part owners, component envelope/cavity, openings, insertion/service/driver
-paths, and reserved support, locator, retention or fastener volumes. A direct-
-fastened enclosure needs one locator, symmetric shared fastener datums,
-removable-part clearance, receiver blind pilots/bosses and reachable access.
+Python scene is a required destination path even when source generates it; DSL generates scene automatically. All task operations accept --args-file.
 
-Budget interfaces before fixing the exterior. Boss diameter must cover pilot
-diameter, twice the minimum radial wall and a named design margin; reserve root
-material and a blind end. Keep axes clear of keepouts, ports, corners and thin
-walls. Floating-point excess is not design margin; load exact hardware values
-only when needed.
+## Evidence and conditional details
 
-Register provisional IDs, owners and `solid`/`cutter`/`separate` roles in
-`constructionFeatures`; these are a construction index, not intent requirements.
-Then run:
-
-```bash
-a3d draft model_build.py
-```
-
-Open it with `view_image`; a draft claims no final dimensions, printability,
-installation, manufacturing acceptance or readiness.
-
-## 2. Use visible and functional feedback
-
-Compare the draft with the brief and opened images; name silhouette, proportion,
-placement and access differences, then change owning parameters. Confirm openings
-connect, interfaces fit material and ownership avoids a topology rewrite. Repeat
-only after source changes; never rerun an unchanged `source.sha256`.
-
-Load one specialist reference only for a concrete unresolved issue. Do not
-reread this skill or the same guidance for an unchanged problem. If image
-evidence cannot be interpreted, report review incomplete; metadata is not sight.
-
-Keep exploration and final geometry in one source. `BuildSession` may start with
-`part_names`; every `add`, `cut` and `observe` has an owning `part_name`. Proceed
-only when key `constructionFeatures` IDs/owners/roles are stable and feedback no
-longer requires replacing the overall topology.
-
-## 3. Finalize the contract and construction
-
-Now resolve printer/nozzle profile, manufacturing mode, topology, interfaces,
-service paths and immutable intent. Use `$AMAGINE3D_RUNTIME_DIR/references/authoring-example.md`; load
-`$AMAGINE3D_RUNTIME_DIR/references/bambu-printability.md` and run `a3d layout` only when volume,
-orientation or layout matters. Never switch profile or scale requirements to
-clear QA; a larger machine is only an alternative to footprint failure.
-
-For confirmed needs, load `$AMAGINE3D_RUNTIME_DIR/references/multipart-connections.md` for fastening,
-`$AMAGINE3D_RUNTIME_DIR/references/design-review.md` for assembly, or
-`$AMAGINE3D_RUNTIME_DIR/references/installation-checks.md` for purchased components; only then read
-`examples/installed_module_build.py`.
-
-Build body, cavity and openings from shared datums; complete support, retention
-and access before finishing. Keep missing dimensions reversible. Use
-`$AMAGINE3D_RUNTIME_DIR/references/surface-shell.md` only for loft/finishing drift.
-
-Submit finishing through `BuildSession.finish` with `checked_fillet` or
-`checked_chamfer`, then `export`; never keep unchanged geometry after a failed
-finish. Validate the separate intent with `a3d intent` before compiling.
-
-## 4. Run the initial full compile
-
-Run one full compile after contract and construction are coherent:
-
-```bash
-a3d compile "model_scene.json" --intent "model_intent.json" --source "model_build.py" --output-dir .
-```
-
-Run CAD commands directly; never pipe draft, compile or diagnose to `head`,
-`tail` or another filter because persisted JSON and the direct exit status are
-authoritative. Keep compile inputs stable. Inspect the current preview and
-compare final STEP with intent; pass is not readiness.
-
-## 5. Diagnose and make evidence-gated repairs
-
-Use compact code, stage, stable issue ID, affected owners, bounds and repair
-hint first. Query only an unread field for the same `(runId, issue ID, field)`:
-
-```bash
-a3d diagnose result.json --id FINDING_ID --field FIELD
-```
-
-Treat occurrences with the same stable ID or cause across part and plate stages
-as one root cause. Repair its owning datum, parameter, feature or connection.
-Preserve intent; a target change needs a verified parent SHA and reason under
-`$AMAGINE3D_RUNTIME_DIR/references/evidence-contract.md`.
-
-Every expensive repeat must consume new evidence or produce new state:
-
-- draft requires changed source from the prior `source.sha256`;
-- compile requires changed source or legitimate changed intent/profile/input
-  bindings; do not replay inputs that already produced a persisted result/runId;
-- a transport interruption without a persisted result is not a completed compile;
-- guidance requires a newly identified concrete problem;
-- progress means `repairDelta.resolved`/`newlyUnblocked`, a later passed stage, or
-  a `remaining` issue whose observed measurement, bounds or witness moved toward
-  expected without a related `regressed` issue.
-
-Runtime admission may reject only a complete successful replay whose source,
-intent, scene and profile bytes still match bound evidence. Any changed binding
-restores eligibility; missing, malformed, incomplete or failed evidence permits
-retry. This gate never chooses stages, geometry, topology or repair strategy.
-
-If the same issue has no evidence change, do not compile or reread the same
-material. Return to its owning feature/interface/source line and shared datum, or
-replace the construction strategy. A larger cutter does not repair an operation
-that misses material; repeated compiles do not replace geometric reasoning.
-
-When `pass=true` and status is `awaiting-visual-review`, stop compiling and
-inspect the preview. Before replying, read that result and report its readiness
-flags unchanged. You may describe an actual visual review and its scope; that
-does not establish manufacturing or delivery readiness. Never claim the model
-ready from `pass=true` alone.
-Match support/bridge claims to `printOrientationEvidence`
-and current mesh-audit warnings; its automatic ranked export pose is evidence,
-not proof of design correctness or support-free printing. `rotated_xy_90deg=false`
-does not cancel `rotateDegreesXYZ`. If inspection finds a defect, change source first.
-
-Use `a3d measure MODEL.step --section-z HEIGHT` for sections and
-`a3d compare BEFORE.glb AFTER.glb --view front` for shape edits. Finite samples
-do not prove global walls; inspect witness scope and stop inside accepted ranges.
-
-## Pull details only for the current problem
-
-- Construction: `a3d guide strategy`, then `$AMAGINE3D_RUNTIME_DIR/references/construction-strategies.md`.
-- Motion: `a3d guide pressable-control`.
-- Assembly: `a3d guide multipart`, then `$AMAGINE3D_RUNTIME_DIR/references/multipart-connections.md`.
-- Non-manufactured display: `$AMAGINE3D_RUNTIME_DIR/references/installed-displays.md`.
-- Printed color: `a3d guide color`; uncommon topology: `$AMAGINE3D_RUNTIME_DIR/color/BACKEND.md`.
-- Intent: `$AMAGINE3D_RUNTIME_DIR/references/evidence-contract.md`; compile: `$AMAGINE3D_RUNTIME_DIR/references/cad-compile.md`.
-
-Read internals only when public guidance and the error are insufficient. Deliver
-the newest coherent source/report/output set with visual/measured observations
-and remaining limitations.
+Read issue IDs, owners, actual/expected and repair hints; use exact report/SHA with agent inspect and page.nextRequest. Do not guess filenames, write report parsers or pipe CAD output through head/tail.
+Repair owning datums/features; unchanged fully bound success is reused. At pass=true/status=awaiting-visual-review, view the actual preview instead of recompiling.
+Report status, visualReviewRequired, review scope and unresolved warnings accurately; automatic acceptance alone does not prove manufacturing readiness.
+Thin-wall sampling minima/p05 do not prove a false alarm: retain warnings unless a targeted BRep/section check at the risk location establishes the cause.
+Use printOrientationEvidence for support/bridge claims; rotateDegreesXYZ is the actual export pose.
+Read `$AMAGINE3D_RUNTIME_DIR/references/bambu-printability.md` and use a3d layout when orientation/packing matters; never scale targets or switch printer to silence failure.
+Surface/finishing issues use `$AMAGINE3D_RUNTIME_DIR/references/surface-shell.md`; installed displays use `$AMAGINE3D_RUNTIME_DIR/references/installed-displays.md`.
+Uncommon printed color topology uses `$AMAGINE3D_RUNTIME_DIR/color/BACKEND.md`; read internals only if the public contract and specific error are insufficient.

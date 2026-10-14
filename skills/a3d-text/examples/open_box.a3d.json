@@ -1,0 +1,23 @@
+{
+  "schema": "a3d-design/v1",
+  "units": {"length": "mm", "angle": "deg"},
+  "params": {
+    "width": {"type": "length", "value": 80},
+    "depth": {"type": "length", "value": 60},
+    "height": {"type": "length", "value": 30},
+    "wall": {"type": "length", "value": 2, "range": [1, 4]},
+    "floor": {"type": "length", "value": 2}
+  },
+  "parts": {
+    "body": {
+      "features": [
+        {
+          "id": "shell", "op": "open_box",
+          "size": ["=width", "=depth", "=height"],
+          "wall": "=wall", "floor": "=floor"
+        }
+      ],
+      "result": "@body.shell"
+    }
+  }
+}

@@ -30,6 +30,10 @@ const unitA = [
   'test_text_a3d_scene_contract',
 ];
 const unitB = [
+  'test_agent_api',
+  'test_design_language',
+  'test_design_roles',
+  'test_design_connections',
   'test_assembly_orientation',
   'test_brep_envelope',
   'test_brep_stl_normalization',

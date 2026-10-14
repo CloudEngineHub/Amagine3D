@@ -148,7 +148,7 @@ def _write_brep_scene(
 
     scene_path = root / f"{intent_path.stem}_scene.json"
     scene = {
-        "schema": "evidence-semantic-scene/v1",
+        "schema": "evidence-semantic-scene/v2",
         "revision": revision,
         "intentRef": {
             "path": str(intent_path),
@@ -221,7 +221,7 @@ def _qa_report_for_mesh(
         }
     identity = np.eye(4).tolist()
     return {
-        "schema": "evidence-a3d-build/v1",
+        "schema": "evidence-a3d-build/v2",
         "backend": "brep-part",
         "part": part,
         "parts": {
@@ -1072,7 +1072,7 @@ class SinglePartOrientationExportTests(unittest.TestCase):
             self.assertTrue(report["backendData"]["exportAudit"]["pass"])
             self.assertEqual(
                 sorted(report["backendData"]["exportAudit"]["artifacts"]),
-                ["glb:display", "step:tower", "stl:tower"],
+                ["step:display", "step:tower", "stl:tower"],
             )
             self.assertTrue((root / "tower_export-audit.json").is_file())
             self.assertTrue((root / "tower.3mf").is_file())
@@ -1312,9 +1312,9 @@ class SingleMaterialAssemblyTests(unittest.TestCase):
                 manufacturing=manufacturing,
                 dimensions_mm=(20.0, 10.0, 6.0),
             )
-            display_path = root / "status-surface.ply"
-            display_mesh = trimesh.creation.box(extents=[4.0, 0.1, 1.0])
-            display_mesh.apply_translation([0.0, -4.8, 5.0])
+            display_path = root / "status-surface.step"
+            from build123d import Box, Pos
+            display_mesh = Pos(0, -4.8, 5) * Box(4.0, 0.1, 1.0)
             display_node = bind_display_component(
                 node_id="status-surface",
                 feature_id="display/status-surface",
@@ -1386,7 +1386,7 @@ class SingleMaterialAssemblyTests(unittest.TestCase):
                 len(report["backendData"]["exportAudit"]["artifacts"]), 9
             )
 
-            self.assertEqual(report["schema"], "evidence-a3d-build/v1")
+            self.assertEqual(report["schema"], "evidence-a3d-build/v2")
             self.assertEqual(report["backend"], "brep-assembly")
             self.assertEqual(report["backendData"]["assembly"]["shape"]["solid_count"], 2)
             self.assertEqual(report["backendData"]["printPlate"]["bodyCount"], 2)
@@ -1402,15 +1402,18 @@ class SingleMaterialAssemblyTests(unittest.TestCase):
             self.assertTrue((root / "case-top-lid.stl").is_file())
             self.assertTrue((root / "case.stl").is_file())
             self.assertTrue((root / "case-assemble.step").is_file())
-            self.assertTrue((root / "case-display.glb").is_file())
+            self.assertTrue((root / "case-display.step").is_file())
             self.assertEqual(
-                report["artifacts"]["glb:display"]["displayOnlyNodeNames"],
+                report["artifacts"]["step:display"]["displayOnlyNodeNames"],
                 ["status-surface"],
             )
             self.assertNotIn("status-surface", report["parts"])
             self.assertNotIn("stl:status-surface", report["artifacts"])
             self.assertNotIn("step:status-surface", report["artifacts"])
-            preview = trimesh.load(root / "case-display.glb", force="scene", process=False)
+            from display_step import step_meshes
+            preview = trimesh.Scene()
+            for node_name, mesh, _ in step_meshes(root / "case-display.step")[0]:
+                preview.add_geometry(mesh, node_name=node_name, geom_name=node_name)
             metadata = {
                 node_name: preview.geometry[preview.graph[node_name][1]].metadata["amagine3d"]
                 for node_name in preview.graph.nodes_geometry
@@ -1540,7 +1543,7 @@ class SingleMaterialAssemblyTests(unittest.TestCase):
                 [
                     sys.executable,
                     str(SKILL / "render_preview.py"),
-                    str(root / "case-display.glb"),
+                    str(root / "case-display.step"),
                     "--out",
                     str(root / "case_views.png"),
                     "--report",
@@ -1750,7 +1753,7 @@ class SingleMaterialAssemblyTests(unittest.TestCase):
                     part_colors=colors,
                 )
 
-            self.assertEqual(report["schema"], "evidence-a3d-build/v1")
+            self.assertEqual(report["schema"], "evidence-a3d-build/v2")
             self.assertEqual(report["backend"], "brep-assembly")
             self.assertFalse(report["autoScale"])
             self.assertEqual(report["scale"], 1.0)
@@ -1785,7 +1788,7 @@ class SingleMaterialAssemblyTests(unittest.TestCase):
             )
             self.assertEqual(
                 set(
-                    report["artifacts"]["glb:display"][
+                    report["artifacts"]["step:display"][
                         "readbackBaseColors"
                     ].values()
                 ),

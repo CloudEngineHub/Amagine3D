@@ -20,6 +20,7 @@ const python =
   );
 
 const commands = {
+  agent: 'agent_api.py',
   capabilities: 'capability_manifest.py',
   compare: 'visual_compare.py',
   compile: 'cad_compile.py',
@@ -322,7 +323,30 @@ function help(usageLines = []) {
   console.log(`a3d — Amagine3D CAD command line
 
 Usage:
-${extraUsage}  a3d capabilities [--symbol NAME]... (query related symbols together)
+${extraUsage}  a3d agent context
+  a3d agent checkpoint '{"report":"RUN.json","sha256":"SHA","observations":["visual observation"],"todo":["next check"],"functionalReady":true}'
+  a3d agent display '{"report":"RUN.json","sha256":"SHA"}' (retry derived preview only)
+  a3d agent design '{"action":"read","design":"model.a3d.json"}'
+  a3d agent design --args-file DESIGN_EDITS.json (batched add/update/remove)
+  a3d agent capabilities '{"designOps":["box","pocket","fillet"]}'
+  a3d agent capabilities '{"symbols":["BuildSession","SelfTappingScrewPair.bind"]}'
+  a3d agent build '{"phase":"draft","source":"model_build.py"}'
+  a3d agent build '{"phase":"draft","design":"model.a3d.json","revision":"REVISION"}'
+  a3d agent build '{"phase":"compile","source":"model_build.py","intent":"model_intent.json","scene":"model_scene.json"}'
+  a3d agent build '{"phase":"compile","design":"model.a3d.json","revision":"REVISION","intent":"model_intent.json"}'
+  a3d agent inspect '{"report":"RESULT.json","field":"/inputBindings/source"}'
+  a3d agent validate '{"intent":"model_intent.json","source":"model_build.py"}'
+  a3d agent validate '{"design":"model.a3d.json","revision":"REVISION","intent":"model_intent.json"}'
+  a3d agent OP --args-file REQUEST.json (workspace JSON; avoids shell quoting)
+  Design names: box cylinder cone sphere torus; rectangle rounded_rectangle circle ellipse polygon regular_polygon slot;
+    line polyline arc face_from_path; extrude revolve loft; union cut intersect; translate rotate mirror;
+    linear_pattern polar_pattern placements; fillet chamfer pocket hole open_box; collar_socket self_tapping_screw installation.
+  Python compile needs a scene path (source may generate it); design compile generates scene automatically.
+  Query needed capability names together; results paginate by output size. fieldTypes describes complex arguments.
+  Design+intent validation checks owners, missing bindings, interfaces and whole-part color support before CAD runs.
+  After recovery, use context.nextInspect/nextDesignRead and saved capability reports.
+  Pass page.nextRequest to agent inspect for the next page; preserve output and exit status without head/tail.
+  a3d capabilities [--symbol NAME]... (query related symbols together)
   a3d diagnose COMPILE_RESULT.json [--id ID | --code CODE | --severity LEVEL] [--offset N --limit N]
   a3d diagnose COMPILE_RESULT.json --id ID --field FIELD [--offset N --limit N]
   a3d diagnose COMPILE_RESULT.json [selectors] [--field FIELD] --full

@@ -38,8 +38,11 @@ test('maps the existing model and reasoning environment to Codex', () => {
   assert.match(cadPrompt, /`\$AMAGINE3D_SKILL_DIR` 指向的确切 `SKILL\.md` 一次/u);
   assert.match(cadPrompt, /不要搜索或读取 cwd、用户目录或全局 skills/u);
   assert.match(cadPrompt, /任务分类、阶段顺序、reference 路由/u);
-  assert.match(cadPrompt, /progress invariant/u);
-  assert.match(cadPrompt, /重复 draft、compile、diagnose/u);
+  assert.match(cadPrompt, /功能骨架稳定后/u);
+  assert.match(cadPrompt, /agent display/u);
+  assert.match(cadPrompt, /context.nextInspect/u);
+  assert.match(cadPrompt, /具体缺失操作或绑定/u);
+  assert.match(cadPrompt, /不把薄壁警告判为采样伪差/u);
   assert.match(cadPrompt, /a3d-admission-rejection\/v1/u);
   assert.match(cadPrompt, /读取 matchedResult/u);
   assert.match(cadPrompt, /缺失、不完整或失败证据仍可重试/u);

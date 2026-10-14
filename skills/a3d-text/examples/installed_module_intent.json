@@ -1,0 +1,44 @@
+{
+  "schema": "evidence-cad-intent/v5",
+  "part": "installed-module",
+  "task_mode": "specification",
+  "representation": "full-3d",
+  "reference_files": [],
+  "coordinate_system": {"back": "y-max", "bottom": "z-min", "front": "y-min", "left": "x-min", "right": "x-max", "top": "z-max", "x_positive": "right", "y_positive": "back", "z_positive": "top"},
+  "dimensions_mm": {"x": {"value": 80.0, "source": "inferred", "confidence": "medium"}, "y": {"value": 16.0, "source": "inferred", "confidence": "medium"}, "z": {"value": 60.0, "source": "inferred", "confidence": "medium"}},
+  "features": [
+    {"id": "frame-body", "kind": "envelope", "evidence": "Fixed installation fixture brief", "acceptance": "One continuous rectangular receiving frame with a viewing-face shoulder.", "part": "frame"},
+    {"id": "module-space", "kind": "cavity", "evidence": "Fixed installation fixture brief", "acceptance": "The independently specified width 50 x height 30 x depth 5 mm module fits behind the viewing-face shoulder and inserts from the rear (+Y) before the cover is fitted.", "face": "back", "direction": "+Y", "edge_crossing": "forbidden", "installation_checks": ["clearance", "insertion", "support", "retention", "passage"], "part": "frame"},
+    {"id": "viewing-window", "kind": "hole", "evidence": "Fixed installation fixture brief", "acceptance": "An unobstructed optical passage connects the outside to the module face; no printed screen fills it.", "face": "front", "direction": "-Y", "edge_crossing": "forbidden", "part": "frame"},
+    {"id": "frame-locator", "kind": "interface", "evidence": "Fixed installation fixture brief", "acceptance": "A socket locates the removable cover independently of its screws.", "face": "back", "direction": "+Y", "edge_crossing": "forbidden", "part": "frame"},
+    {"id": "frame-corner-1-pilot", "kind": "hole", "evidence": "Fixed installation fixture brief", "acceptance": "A coaxial blind pilot accepts the proposed plastics screw.", "face": "back", "direction": "+Y", "edge_crossing": "forbidden", "part": "frame"},
+    {"id": "frame-corner-1-boss", "kind": "interface", "evidence": "Fixed installation fixture brief", "acceptance": "Continuous receiver material surrounds the blind pilot.", "part": "frame"},
+    {"id": "frame-corner-2-pilot", "kind": "hole", "evidence": "Fixed installation fixture brief", "acceptance": "A coaxial blind pilot accepts the proposed plastics screw.", "face": "back", "direction": "+Y", "edge_crossing": "forbidden", "part": "frame"},
+    {"id": "frame-corner-2-boss", "kind": "interface", "evidence": "Fixed installation fixture brief", "acceptance": "Continuous receiver material surrounds the blind pilot.", "part": "frame"},
+    {"id": "frame-corner-3-pilot", "kind": "hole", "evidence": "Fixed installation fixture brief", "acceptance": "A coaxial blind pilot accepts the proposed plastics screw.", "face": "back", "direction": "+Y", "edge_crossing": "forbidden", "part": "frame"},
+    {"id": "frame-corner-3-boss", "kind": "interface", "evidence": "Fixed installation fixture brief", "acceptance": "Continuous receiver material surrounds the blind pilot.", "part": "frame"},
+    {"id": "frame-corner-4-pilot", "kind": "hole", "evidence": "Fixed installation fixture brief", "acceptance": "A coaxial blind pilot accepts the proposed plastics screw.", "face": "back", "direction": "+Y", "edge_crossing": "forbidden", "part": "frame"},
+    {"id": "frame-corner-4-boss", "kind": "interface", "evidence": "Fixed installation fixture brief", "acceptance": "Continuous receiver material surrounds the blind pilot.", "part": "frame"},
+    {"id": "cover-body", "kind": "envelope", "evidence": "Fixed installation fixture brief", "acceptance": "A complete removable rear closure supports two internal retaining pads.", "part": "cover"},
+    {"id": "cover-collar", "kind": "interface", "evidence": "Fixed installation fixture brief", "acceptance": "One hollow locating collar enters the frame socket.", "part": "cover"},
+    {"id": "module-retainers", "kind": "interface", "evidence": "Fixed installation fixture brief", "acceptance": "Pads restrict module withdrawal to 0.2 mm when the cover is fastened.", "part": "cover"},
+    {"id": "cover-corner-1", "kind": "hole", "evidence": "Fixed installation fixture brief", "acceptance": "An accessible through hole clears the screw shank.", "face": "back", "direction": "through-Y", "edge_crossing": "forbidden", "part": "cover"},
+    {"id": "cover-corner-2", "kind": "hole", "evidence": "Fixed installation fixture brief", "acceptance": "An accessible through hole clears the screw shank.", "face": "back", "direction": "through-Y", "edge_crossing": "forbidden", "part": "cover"},
+    {"id": "cover-corner-3", "kind": "hole", "evidence": "Fixed installation fixture brief", "acceptance": "An accessible through hole clears the screw shank.", "face": "back", "direction": "through-Y", "edge_crossing": "forbidden", "part": "cover"},
+    {"id": "cover-corner-4", "kind": "hole", "evidence": "Fixed installation fixture brief", "acceptance": "An accessible through hole clears the screw shank.", "face": "back", "direction": "through-Y", "edge_crossing": "forbidden", "part": "cover"}
+  ],
+  "manufacturing": {"mode": "multipart", "parts": [{"name": "frame", "role": "receiving window frame", "acceptance": "Separately printed part with owned features."}, {"name": "cover", "role": "removable rear cover", "acceptance": "Separately printed part with owned features."}], "interfaces": [{"id": "cover-fastening", "connection": "self-tapping-screw", "assembly_axis": "-Y", "engagement_mm": 6.0, "features": ["cover-collar", "frame-locator", "cover-corner-1", "frame-corner-1-pilot", "frame-corner-1-boss", "cover-corner-2", "frame-corner-2-pilot", "frame-corner-2-boss", "cover-corner-3", "frame-corner-3-pilot", "frame-corner-3-boss", "cover-corner-4", "frame-corner-4-pilot", "frame-corner-4-boss"], "fastening": {"screw_family": "M3 plastic thread-forming/self-tapping", "nominal_diameter_mm": 3.0, "clearance_diameter_mm": 3.4, "pilot_diameter_mm": 2.6, "boss_outer_diameter_mm": 7.5, "pilot_tip_clearance_mm": 0.8, "closed_end_mm": 1.2, "minimum_boss_wall_mm": 1.8, "minimum_root_embed_mm": 0.4, "cutter_overshoot_mm": 1.0, "cover_thickness_mm": 3.0, "locator_pairs": [{"id": "cover-location", "male_feature": "cover-collar", "female_feature": "frame-locator"}], "fasteners": [{"id": "corner-1", "clearance_feature": "cover-corner-1", "pilot_feature": "frame-corner-1-pilot", "boss_feature": "frame-corner-1-boss"}, {"id": "corner-2", "clearance_feature": "cover-corner-2", "pilot_feature": "frame-corner-2-pilot", "boss_feature": "frame-corner-2-boss"}, {"id": "corner-3", "clearance_feature": "cover-corner-3", "pilot_feature": "frame-corner-3-pilot", "boss_feature": "frame-corner-3-boss"}, {"id": "corner-4", "clearance_feature": "cover-corner-4", "pilot_feature": "frame-corner-4-pilot", "boss_feature": "frame-corner-4-boss"}]}, "acceptance": "The collar controls lateral position; four coaxial screw pairs clamp the rear cover. Remove the cover before inserting or withdrawing the module.", "between": ["cover", "frame"]}]},
+  "printability": {"profile": {"path": "bambu-a1-mini-0.4-standard.example.json", "sha256": "f5bdfcc78cc4e55289a4a259c6d94a6cab18534494d50655b5f0d1d67b132386"}, "build_axis": "+Z", "bed_contact": "z-min", "support_policy": "supports-allowed", "minimum_wall_target_mm": 1.2, "critical_features": ["module-space", "viewing-window", "module-retainers"], "print_package_mode": "separate_parts"},
+  "visual": {"required": true, "reference_view": "isometric", "landmarks": ["A front (-Y) rectangular viewing window in front of a module installed from the rear (+Y); a separate complete rear closure."]},
+  "assumptions": [
+    "Fixture brief: assembly 80 x 16 x 60 mm, module 50 x 5 x 30 mm; these targets are independent of design controls.",
+    "Adapt profile path/hash to the chosen printer before validation; copy the referenced profile into the workspace.",
+    "Proposed plastics screws use 6 mm engagement and 0.8 mm tip clearance; actual supplier hardware requires independent verification.",
+    "Installation checks establish authored geometric access and stops, not electrical function or fastening strength."
+  ],
+  "color_regions": [
+    {"name": "frame", "part": "frame", "hex": "#D8D2C8", "purpose": "distinguish manufactured parts", "boundary": "whole physical part", "evidence": "Proposed fixture colors", "continuity": "separate-part"},
+    {"name": "cover", "part": "cover", "hex": "#536D78", "purpose": "distinguish manufactured parts", "boundary": "whole physical part", "evidence": "Proposed fixture colors", "continuity": "separate-part"}
+  ],
+  "palette_reduction": {"applied": false, "reason": "One material per manufactured part"}
+}

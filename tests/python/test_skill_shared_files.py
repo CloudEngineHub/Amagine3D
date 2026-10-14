@@ -108,36 +108,27 @@ class SharedSkillFileTests(unittest.TestCase):
         self.assertIn("$AMAGINE3D_RUNTIME_DIR/references/", body)
         self.assertIn("$AMAGINE3D_RUNTIME_DIR/color/BACKEND.md", body)
 
-    def test_skill_workflow_structure_and_example_routing(self):
+    def test_skill_entry_fits_the_read_budget_and_its_dsl_starter_executes(self):
+        import json
+        sys.path.insert(0, str(PUBLIC))
+        from design_api import apply, load
+        from design_language import normalize
         skill = (TEXT / "SKILL.md").read_text(encoding="utf-8")
-        marker = (
-            "a3d-workflow:v2 classify > functional-draft > feedback > contract > "
-            "compile > evidence-repair"
-        )
-        self.assertEqual(skill.count(marker), 1)
-        self.assertEqual(skill.count("$AMAGINE3D_SKILL_DIR/SKILL.md"), 1)
-        normalized = re.sub(r"\s+", " ", skill)
-        self.assertIn("never substitute a cwd or global namesake", normalized)
-
-        headings = (
-            "## 1. Classify and draft visible construction",
-            "## 2. Use visible and functional feedback",
-            "## 3. Finalize the contract and construction",
-            "## 4. Run the initial full compile",
-            "## 5. Diagnose and make evidence-gated repairs",
-        )
-        positions = [skill.index(heading) for heading in headings]
-        self.assertEqual(positions, sorted(positions))
-        self.assertGreater(skill.index("\na3d compile "), positions[2])
-
-        early = skill[positions[0]:positions[2]]
-        contract = skill[positions[2]:positions[3]]
-        self.assertIn("simple_brep_build.py", early)
-        self.assertIn("installed_module_draft.py", early)
-        self.assertIn("**functional skeleton**", early)
-        self.assertIn("constructionFeatures", early)
-        self.assertNotIn("installed_module_build.py", early)
-        self.assertIn("installed_module_build.py", contract)
+        # The native shell projection clipped the old entry at about 10 KB.
+        self.assertLess(len(skill.encode("utf-8")), 8_000)
+        match = re.search(r"```json\n(.*?)\n```", skill, re.S)
+        self.assertIsNotNone(match)
+        request = json.loads(match[1])
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            saved = apply(root, request)
+            _, document, _ = load(root, request["design"], saved["revision"])
+            normalize(document)
+            updated = apply(root, {"action": "apply", "design": request["design"],
+                "baseRevision": saved["revision"], "changes": [
+                    {"kind": "update", "target": "params.wall", "set": {"value": 2.4}}]})
+            self.assertTrue(updated["changed"])
+            self.assertNotEqual(updated["revision"], saved["revision"])
 
     def test_skill_local_links_exist(self):
         skill = (TEXT / "SKILL.md").read_text(encoding="utf-8")
