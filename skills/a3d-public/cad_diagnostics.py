@@ -13,6 +13,65 @@ from typing import Any
 SOURCE_DIAGNOSTICS_SCHEMA = "evidence-cad-source-diagnostics/v1"
 
 
+class ContractIssue(str):
+    """A contract error message that keeps its structured problem identity.
+
+    Contract validators return text that existing callers join, match, and
+    persist as plain strings. Carrying the rule and its location on that text
+    keeps the existing contract while delivering identity from the producer all
+    the way to the compile report and the repair state.
+    """
+
+    def __new__(
+        cls,
+        message: str,
+        *,
+        rule_id: str,
+        field: str | None = None,
+        subject_id: str | None = None,
+        interface_id: str | None = None,
+        feature_id: str | None = None,
+        actual: Any = None,
+        expected: Any = None,
+        repair_hint: str | None = None,
+    ) -> "ContractIssue":
+        instance = super().__new__(cls, message)
+        instance.rule_id = rule_id
+        instance.field = field
+        instance.subject_id = subject_id
+        instance.interface_id = interface_id
+        instance.feature_id = feature_id
+        instance.actual = actual
+        instance.expected = expected
+        instance.repair_hint = repair_hint
+        return instance
+
+    def to_issue(self) -> dict[str, Any]:
+        issue: dict[str, Any] = {
+            "code": "AUTHORING.INVALID",
+            "message": str(self),
+            "ruleId": self.rule_id,
+        }
+        for key, value in (
+            ("field", self.field),
+            ("subjectId", self.subject_id),
+            ("interfaceId", self.interface_id),
+            ("featureId", self.feature_id),
+            ("actual", self.actual),
+            ("expected", self.expected),
+            ("repairHint", self.repair_hint),
+        ):
+            if value is not None:
+                issue[key] = value
+        return issue
+
+
+def contract_issue(error: Any) -> dict[str, Any] | None:
+    """Return a validator error's structured identity, when it carries one."""
+
+    return error.to_issue() if isinstance(error, ContractIssue) else None
+
+
 def write_source_diagnostics(payload: Mapping[str, Any]) -> None:
     """Keep diagnostics outside truncated tool output, bound to one managed run."""
     destination = os.environ.get("AMAGINE3D_SOURCE_DIAGNOSTICS_PATH")

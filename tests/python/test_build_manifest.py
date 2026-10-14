@@ -56,7 +56,7 @@ def _valid_report(root: Path) -> dict:
     )
     scene_path = root / "scene.json"
     scene_path.write_text(json.dumps({
-        "schema": "evidence-semantic-scene/v1", "revision": "rev-1",
+        "schema": "evidence-semantic-scene/v2", "revision": "rev-1",
         "intentRef": intent_ref(intent_path), "units": "mm",
         "coordinateSystem": {"handedness": "right", "up": "Z"},
         "materials": [], "parts": [{"id": "part", "representationMaster": "brep"}],
@@ -71,7 +71,7 @@ def _valid_report(root: Path) -> dict:
     inputs = {}
     for name, path, schema in (
         ("intent", intent_path, "evidence-cad-intent/v5"),
-        ("scene", scene_path, "evidence-semantic-scene/v1"),
+        ("scene", scene_path, "evidence-semantic-scene/v2"),
         ("profile", PROFILE, "evidence-bambu-printer-profile/v1"),
     ):
         inputs[name] = {
@@ -89,17 +89,26 @@ def _valid_report(root: Path) -> dict:
     for key, filename in (
         ("stl:part", "part.stl"),
         ("step:part", "part.step"),
-        ("glb:display", "part-display.glb"),
+        ("step:display", "part-display.step"),
     ):
         path = root / filename
         if not path.exists():
             path.write_bytes(filename.encode("ascii"))
         frame = (
             "semantic"
-            if key in {"step:part", "glb:display"}
+            if key in {"step:part", "step:display"}
             else "part-print" if key == "stl:part" else "plate-print"
         )
         artifacts[key] = artifact_record(path, coordinateFrame=frame)
+    display = artifacts["step:display"]
+    descriptor_path = root / "part-display.step.scene.json"
+    descriptor_path.write_text(json.dumps({"schema": "a3d-step-display/v1", "units": "mm",
+        "coordinateSystem": {"up": "Z", "handedness": "right"},
+        "step": {key: display[key] for key in ("path", "sha256")},
+        "objects": [{"name": "part", "role": "manufactured", "coordinateFrame": "semantic", "transformApplied": True,
+            "step": artifacts["step:part"], "geometry": geometry,
+            "appearance": {"baseColor": "#6891B5", "metallic": 0, "roughness": 0.58}}]}))
+    display["scene"] = artifact_record(descriptor_path)
     export_audit = {
         "artifacts": {
             key: {
@@ -108,7 +117,7 @@ def _valid_report(root: Path) -> dict:
                 "path": record["path"],
                 "sha256": record["sha256"],
                 "type": (
-                    "glb" if key == "glb:display" else "step"
+                    "step" if key == "step:display" else "step"
                     if key.startswith("step:") else "stl"
                 ),
             }
@@ -116,7 +125,7 @@ def _valid_report(root: Path) -> dict:
         },
         "errors": [],
         "pass": True,
-        "schema": "evidence-export-audit/v1",
+        "schema": "evidence-export-audit/v2",
     }
     audited_geometry = {
         key: value
@@ -124,7 +133,7 @@ def _valid_report(root: Path) -> dict:
         if key != "isVolume"
     }
     for key, record in export_audit["artifacts"].items():
-        if key == "glb:display":
+        if key == "step:display":
             continue
         record["expected"] = deepcopy(audited_geometry)
         record["observed"] = deepcopy(audited_geometry)
@@ -142,7 +151,7 @@ def _valid_report(root: Path) -> dict:
         "artifactMatrix": {
             "parts": {
                 "part": {
-                    "glb": "required",
+                    "displayStep": "required",
                     "step": "required",
                     "stl": "required",
                     "threeMf": "not-applicable",
@@ -186,7 +195,7 @@ def _valid_report(root: Path) -> dict:
         "revision": "rev-1",
         "runId": "123e4567-e89b-42d3-a456-426614174000",
         "scale": 1.0,
-        "schema": "evidence-a3d-build/v1",
+        "schema": "evidence-a3d-build/v2",
         "warnings": [],
     }
 
@@ -239,7 +248,7 @@ class BuildManifestTests(unittest.TestCase):
         )
         scene_path = root / "part_scene.json"
         scene_path.write_text(json.dumps({
-            "schema": "evidence-semantic-scene/v1",
+            "schema": "evidence-semantic-scene/v2",
             "revision": "bind-inputs-001",
             "intentRef": intent_ref(intent_path),
             "units": "mm",
@@ -506,7 +515,7 @@ class BuildManifestTests(unittest.TestCase):
             report = deepcopy(_valid_report(Path(directory)))
             report["schema"] = "evidence-cad-build/v4"
             self.assertIn(
-                "schema must be evidence-a3d-build/v1",
+                "schema must be evidence-a3d-build/v2",
                 validate_manifest(report),
             )
 
@@ -515,8 +524,8 @@ class BuildManifestTests(unittest.TestCase):
             report = _valid_report(Path(directory))
             report["legacyPayload"] = {"schema": "evidence-cad-build/v4"}
             report["artifacts"]["legacyReport"] = {
-                "path": report["artifacts"]["glb:display"]["path"],
-                "sha256": report["artifacts"]["glb:display"]["sha256"],
+                "path": report["artifacts"]["step:display"]["path"],
+                "sha256": report["artifacts"]["step:display"]["sha256"],
             }
             errors = validate_manifest(report)
             self.assertTrue(any("top-level fields must be exactly" in item for item in errors))

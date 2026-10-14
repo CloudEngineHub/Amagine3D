@@ -14,7 +14,7 @@ The semantic scene selects the implementation per part:
 | --- | --- |
 | BRep part, colors follow whole-part boundaries | root `export_part()` / `export_assembly()` |
 | BRep part, several regions inside one body | `color.cad_helpers.export_regions()` |
-| Display-only color | display GLB only; exclude from manufacturing |
+| Display-only color | display STEP only; exclude from manufacturing |
 
 These are internal compilers, not alternative workflows.
 
@@ -30,6 +30,11 @@ no palette was declared. Declared colors remain authoritative, and callers may
 pass `part_colors` to verify them.
 
 ## BRep internal regions
+
+Declared whole-part colors map by physical `part`: exactly one region per part.
+Region names may differ from part IDs; sourceBindings retain the exact declared
+region name. Multiple regions on one owner need the region exporter and cannot
+be collapsed into a whole-part color assignment.
 
 Use `export_regions()` when validated BRep shapes form permanent material
 partitions inside one physical part. Build the complete parent first, then
@@ -52,7 +57,7 @@ Hidden per-region STLs are topology evidence, not separate user parts.
 ## Package and material plan
 
 3MF objects and material properties come from the same compiled physical
-geometry as STL and display GLB. The material plan records:
+geometry as STL and display STEP. The material plan records:
 
 - part and region IDs;
 - RGB color;

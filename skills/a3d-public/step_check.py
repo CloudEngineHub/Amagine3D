@@ -19,7 +19,7 @@ from build_manifest import (
 from intent_contract import DEFAULT_DIMENSION_PRECISION_MM
 
 
-BUILD_SCHEMA = "evidence-a3d-build/v1"
+BUILD_SCHEMA = "evidence-a3d-build/v2"
 
 
 def _digest(path: Path) -> str:

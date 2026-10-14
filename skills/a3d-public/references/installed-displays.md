@@ -1,7 +1,7 @@
 # Installed components and optional preview references
 
 Use this reference when an installed screen or other purchased component affects
-the manufactured geometry or assembly preview. `display.glb` names the assembly
+the manufactured geometry or assembly preview. `display.step` names the assembly
 preview, not an electronic screen or a requirement to manufacture one.
 
 For a functional installation, derive the necessary aperture, keepout, support
@@ -16,7 +16,7 @@ that scope.
 
 Declare actual receiving features in physical intent and construct them in the
 part. Purchased modules, glass and transient pixels may be represented by
-optional `display-only` nodes. They appear in GLB and stay out of STEP, STL, 3MF,
+optional `display-only` nodes. They appear in the display STEP and its bound preview scene, and stay out of manufacturing STEP, STL, 3MF,
 manufacturing part counts and booleans. A printable bezel, cover or dummy is a
 manufactured part only when its manufacture is part of the design; preview
 appearance alone is not that decision.
@@ -26,8 +26,8 @@ interface at the shared installation datum. A clearance envelope may obscure an
 opening, rim or contact surface; use it for fit, and shape the optional display
 reference to express that interface. Keep proposed hardware identity explicit.
 
-Use `bind_display_component` to bind a BRep solid/face or a mesh without manually
-writing source meshes and scene JSON. `physical_feature_ref` names the relevant
+Use `bind_display_component` to bind a BRep solid or face without manually
+writing STEP sources and scene JSON. `physical_feature_ref` names the relevant
 intent-backed aperture, seat, support or other receiving feature on the same
 owning part. This is a semantic association; it does not prove installation.
 
@@ -37,7 +37,7 @@ from geometry_binding import bind_display_component
 reference = bind_display_component(
     node_id="module-reference", feature_id="reference/module",
     physical_feature_ref="module-mount", shape=module_envelope,
-    path=OUT / ".references" / "module.ply",
+    path=OUT / ".references" / "module.step",
     appearance={"baseColor": "#111417", "roughness": 0.18},
 )
 ```

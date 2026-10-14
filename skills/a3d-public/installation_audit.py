@@ -67,11 +67,13 @@ def audit(report_path):
                     evidence = error.report
                 for check in evidence["checks"]:
                     item = {**check, "featureId": feature, "id": f"{feature}/{prefix}{check['id']}"}
+                    part_id = check["id"].rsplit(":", 1)[-1]
+                    if part_id in report["parts"]:
+                        item["part"] = part_id
                     result["checks"].append(item)
                     if not item["pass"]:
-                        result["errors"].append({"code": "QA.INSTALLATION_FAILED", "check": item["id"],
-                                                 "message": f"{item['id']}: {item['observed']}",
-                                                 "details": item})
+                        result["errors"].append({**item, "code": "QA.INSTALLATION_FAILED", "check": item["id"],
+                                                 "message": f"{item['id']}: {item['observed']}"})
 
             if any(groups.values()):
                 collect(lambda: check_installation(
@@ -85,10 +87,20 @@ def audit(report_path):
             if "passageEnvelope" in record:
                 passage = witness(record, "passageEnvelope")
                 if not passage.is_volume or len(passage.split()) != 1:
-                    raise ValueError(f"{feature}: passage envelope must be one connected volume")
+                    result["errors"].append({"code": "QA.INSTALLATION_FAILED", "featureId": feature,
+                        "check": f"{feature}/passage:connected", "observed": {"isVolume": bool(passage.is_volume), "bodyCount": len(passage.split())},
+                        "expected": {"isVolume": True, "bodyCount": 1},
+                        "message": f"{feature}: passage envelope must be one connected volume"})
+                    continue
                 connection = trimesh.boolean.intersection([passage, envelope], engine="manifold")
-                if connection.is_empty or connection.volume <= record["maxOverlapMm3"]:
-                    raise ValueError(f"{feature}: passage envelope must extend into its component envelope")
+                item = {"id": f"{feature}/passage:reaches-component", "featureId": feature,
+                        "observed": {"overlapMm3": float(connection.volume)},
+                        "expected": {"contact": True, "thresholdMm3": record["maxOverlapMm3"]},
+                        "pass": bool(not connection.is_empty and connection.volume > record["maxOverlapMm3"])}
+                result["checks"].append(item)
+                if not item["pass"]:
+                    result["errors"].append({**item, "code": "QA.INSTALLATION_FAILED", "check": item["id"],
+                        "message": f"{feature}: passage envelope must extend into its component envelope"})
                 collect(lambda: check_installation(passage,
                     {name: part(name) for name in record["passageParts"]},
                     max_overlap_mm3=record["maxOverlapMm3"]), "passage/")

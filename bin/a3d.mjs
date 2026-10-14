@@ -42,7 +42,7 @@ const guides = {
 - A single unpartitioned part gets one printable whole-part material assignment, not a false multicolor claim. Add more colors only as real volumetric regions with meaningful boundaries; never invent structural splits just to add color.
 - Whole-part BRep assignments are automatic in export_part()/export_assembly(); part_colors may verify declared assembly colors.
 - Multiple permanent regions in one BRep body: color.cad_helpers.export_regions().
-- Display-only color belongs only in the GLB and must not be claimed as printed color.
+- Display-only color belongs only in the display STEP scene and must not be claimed as printed color.
 - Treat 3MF as the preferred manufactured-color deliverable.
 Read $AMAGINE3D_RUNTIME_DIR/color/BACKEND.md only for multiple material regions inside one part or uncommon region topology.`,
   multipart: `Multipart construction
@@ -70,7 +70,7 @@ Read $AMAGINE3D_RUNTIME_DIR/references/multipart-connections.md only for direct 
 - For hollow lofts or dimensions that drift after finishing, read $AMAGINE3D_RUNTIME_DIR/references/surface-shell.md; adapt examples/surface_shell_build.py's build_geometry / measure_finished callbacks to the current source and station mapping.
 - Use simple sections and ruled or segmented lofts when the intended form permits coarser transitions; validate the solid and actual wall thickness.
 - Analytic profiles, extrusions, revolutions and sweeps remain appropriate for simpler geometry; construct cavities and mechanical interfaces in the same BRep body.
-- STL, 3MF and GLB meshes are derived exports. Autonomous mesh/SDF master authoring is not supported.
+- STL, 3MF and STEP meshes are derived exports. Autonomous mesh/SDF master authoring is not supported.
 - Clean orthographic evidence may drive constrained profiles and extrusions; pixel art may drive occupied-cell geometry or relief.
 - A photograph establishes envelope, landmarks and uncertainty; use them to define editable BRep controls.
 Choose from geometry requirements, not the product name or input file type.`,
@@ -191,7 +191,7 @@ function draftReplay(root, args) {
     if (!resultPath) continue;
     const result = jsonObject(resultPath);
     if (
-      result?.schema !== 'a3d-draft-result/v1' ||
+      result?.schema !== 'a3d-draft-result/v2' ||
       result.status !== 'draft' ||
       !UUID.test(result.runId ?? '') ||
       basename(dirname(resultPath)) !== result.runId ||
@@ -251,7 +251,7 @@ function compileReplay(root, args) {
   if (!resultPath || !inside(output, resultPath)) return null;
   const result = jsonObject(resultPath);
   if (
-    result?.schema !== 'evidence-cad-compile-result/v1' ||
+    result?.schema !== 'evidence-cad-compile-result/v2' ||
     result.pass !== true ||
     result.status !== 'awaiting-visual-review' ||
     result.visualReviewRequired !== true ||
@@ -267,7 +267,7 @@ function compileReplay(root, args) {
   const report = reportPath ? jsonObject(reportPath) : null;
   if (
     !profile ||
-    report?.schema !== 'evidence-a3d-build/v1' ||
+    report?.schema !== 'evidence-a3d-build/v2' ||
     report.runId !== result.runId ||
     report.pass !== true ||
     !bindingMatches(report.inputs?.source, source, root) ||
@@ -335,7 +335,7 @@ ${extraUsage}  a3d capabilities [--symbol NAME]... (query related symbols togeth
   a3d reference IMAGE [--out REPORT.json]
   a3d search QUERY [--max-results N] [--search-depth MODE] [--topic TOPIC] [--time-range RANGE] [--answer MODE]
   a3d draft SOURCE.py [--intent INTENT.json] [--timeout-seconds 120]
-  a3d measure MODEL.step [--section-z MM] [--section-x MM] [--section-y MM] [--out FILE]
+  a3d measure MODEL.step [--section-z MM] [--section-x MM] [--section-y MM] [--preview] [--out FILE]
   a3d compare BEFORE AFTER --view front [--out FILE] [--report FILE]
   a3d compile SCENE.json --intent INTENT.json --source BUILD.py [--output-dir DIR] [--marker FILE]
 
@@ -656,8 +656,8 @@ function diagnose(args) {
   } catch (error) {
     fail(`Compile result is not valid JSON: ${error.message}`);
   }
-  if (payload?.schema !== 'evidence-cad-compile-result/v1' || !Array.isArray(payload.issues)) {
-    fail('File is not an evidence-cad-compile-result/v1 document.');
+  if (payload?.schema !== 'evidence-cad-compile-result/v2' || !Array.isArray(payload.issues)) {
+    fail('File is not an evidence-cad-compile-result/v2 document.');
   }
   const issues = payload.issues.filter((issue) =>
     Object.entries(filters).every(([key, value]) => issue?.[key] === value),

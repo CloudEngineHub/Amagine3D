@@ -98,8 +98,8 @@ def main():
     try:
         workspace = Path(args.workspace).resolve()
         sources = [_workspace_path(value, workspace) for value in (args.before, args.after)]
-        if any(path.suffix.lower() not in {".stl", ".glb"} for path in sources):
-            raise ValueError("compare expects STL or GLB in the same coordinate frame and millimetres; use the semantic display GLB rather than a 3MF print layout")
+        if any(path.suffix.lower() not in {".step", ".stp", ".stl"} for path in sources):
+            raise ValueError("compare expects STEP or STL in the same coordinate frame and millimetres; use the semantic STEP rather than a 3MF print layout")
         destination = _workspace_path(args.out or f"{sources[1].stem}_{args.view}_comparison.png", workspace)
         report = _workspace_path(args.report or destination.with_suffix(".json"), workspace)
         outputs = (destination, report)

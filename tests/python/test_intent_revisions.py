@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT / "skills" / "a3d-public"))
 
 import cad_compile
 from intent_contract import dimension_limits, dimension_measurement_precision_mm, validate
-from intent_revision import audit_lineage, history_path, semantic_diff, validate_revision
+from intent_revision import IntentHistoryError, audit_lineage, history_path, load_history, semantic_diff, validate_revision
 from tests.python.intent_fixture import write_intent
 
 
@@ -21,8 +21,12 @@ class IntentRevisionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.path, self.original = write_intent(self.root, part="part", feature_owners={"part-body": "part"})
+        profile = self.original["printability"]["profile"]
+        (self.root / "profile.json").write_bytes(Path(profile["path"]).read_bytes())
+        profile["path"] = "profile.json"
+        self.path.write_text(json.dumps(self.original) + "\n")
 
     def save(self, name, document):
         path = self.root / name
@@ -197,7 +201,7 @@ class IntentRevisionTests(unittest.TestCase):
         self.assertEqual(audit["evidenceStatus"], "author-declared")
 
     def test_generated_build_cannot_be_evidence_for_replacement_target(self):
-        self.save("build.json", {"schema": "evidence-a3d-build/v1"})
+        self.save("build.json", {"schema": "evidence-a3d-build/v2"})
         updated = self.revision(self.path, self.original, "evidence-correction")
         updated["revision"]["evidence"] = {"kind": "external-evidence", "text": "Measured output", "reference": "build.json"}
         self.assertTrue(any("cannot establish replacement" in error for error in validate_revision(updated, self.root)))
@@ -209,6 +213,116 @@ class IntentRevisionTests(unittest.TestCase):
         path = self.save("next.json", updated)
         with self.assertRaisesRegex(ValueError, "recorded immutable intent"):
             self.register(path, updated)
+
+    def test_original_bytes_restore_a_frozen_intent_and_validate_does_not_commit(self):
+        import agent_api
+        # Noncanonical bytes cannot be recreated by dumping the parsed snapshot.
+        self.original["assumptions"] = ["原始要求"]
+        raw = json.dumps(self.original, indent=3, ensure_ascii=False).encode() + b"\r\n"
+        self.path.write_bytes(raw)
+        fresh = agent_api.dispatch(self.root, "validate", {"intent": self.path.name})
+        self.assertTrue(fresh["pass"], fresh)
+        self.assertFalse(history_path(self.root, "part").exists())
+        self.assertFalse((self.root / ".a3d-agent/intents").exists())
+        baseline = self.register(self.path, self.original)
+        frozen_history = history_path(self.root, "part").read_bytes()
+        history = json.loads(frozen_history)
+        byte_ref = history["entries"][baseline["intentHash"]]["byteSnapshot"]
+        byte_path = Path(byte_ref["path"])
+        self.assertEqual(byte_path.read_bytes(), raw)
+        self.path.write_bytes(json.dumps(self.original, sort_keys=True).encode())
+        overwritten = self.path.read_bytes()
+        failed = agent_api.dispatch(self.root, "validate", {"intent": self.path.name})
+        self.assertFalse(failed["pass"])
+        report = json.loads(Path(failed["report"]["path"]).read_text())
+        problem = next(issue for issue in report["issues"] if issue["code"] == "CONTRACT.INTENT_HISTORY_UNVERIFIED")
+        self.assertEqual(problem["observed"]["byteSnapshot"], byte_ref)
+        self.assertEqual(problem["observed"]["sha256"], sha256(overwritten).hexdigest())
+        self.assertEqual(problem["expected"]["sha256"], sha256(raw).hexdigest())
+        self.assertEqual(self.path.read_bytes(), overwritten)
+        self.assertEqual(history_path(self.root, "part").read_bytes(), frozen_history)
+        self.path.write_bytes(byte_path.read_bytes())
+        self.assertTrue(agent_api.dispatch(self.root, "validate", {"intent": self.path.name})["pass"])
+        self.assertEqual(history_path(self.root, "part").read_bytes(), frozen_history)
+
+    def test_new_linked_revision_is_checked_without_freezing_it_during_validation(self):
+        import agent_api
+        self.register(self.path, self.original)
+        updated = self.revision(self.path, self.original, "target-change")
+        updated["dimensions_mm"]["x"]["value"] += 1
+        path = self.save("next.json", updated)
+        frozen_history = history_path(self.root, "part").read_bytes()
+        snapshots = set((self.root / ".a3d-agent/intents").iterdir())
+        result = agent_api.dispatch(self.root, "validate", {"intent": path.name})
+        self.assertTrue(result["pass"], result)
+        self.assertEqual(history_path(self.root, "part").read_bytes(), frozen_history)
+        self.assertEqual(set((self.root / ".a3d-agent/intents").iterdir()), snapshots)
+        self.path.write_bytes(self.path.read_bytes() + b"\n")
+        self.assertFalse(agent_api.context(self.root, {})["validation"]["inputsCurrent"])
+        snapshot = json.loads(frozen_history)["entries"]
+        original_bytes = Path(next(iter(snapshot.values()))["byteSnapshot"]["path"]).read_bytes()
+        self.path.write_bytes(original_bytes)
+        updated.pop("revision")
+        self.save(path.name, updated)
+        self.assertFalse(agent_api.dispatch(self.root, "validate", {"intent": path.name})["pass"])
+
+    def test_byte_archive_is_verified_and_cannot_be_used_to_bypass_original_binding(self):
+        baseline = self.register(self.path, self.original)
+        history = json.loads(history_path(self.root, "part").read_text())
+        byte_ref = history["entries"][baseline["intentHash"]]["byteSnapshot"]
+        snapshot = Path(byte_ref["path"])
+        raw = snapshot.read_bytes()
+        snapshot.write_bytes(raw + b" ")
+        with self.assertRaisesRegex(ValueError, "byte snapshot"):
+            load_history(self.root, "part")
+        snapshot.write_bytes(raw)
+        self.path.unlink()
+        with self.assertRaises(IntentHistoryError) as caught:
+            load_history(self.root, "part")
+        self.assertEqual(caught.exception.details["observed"]["byteSnapshot"], byte_ref)
+        self.assertIsNone(caught.exception.details["observed"]["sha256"])
+
+    def test_legacy_history_upgrades_only_verified_bytes(self):
+        baseline = self.register(self.path, self.original)
+        history = json.loads(history_path(self.root, "part").read_text())
+        history["entries"][baseline["intentHash"]].pop("byteSnapshot")
+        self.save(history_path(self.root, "part").name, history)
+        self.assertIn("byteSnapshot", load_history(self.root, "part")["entries"][baseline["intentHash"]])
+        self.path.write_text(json.dumps(self.original, indent=2))
+        with self.assertRaises(IntentHistoryError) as caught:
+            load_history(self.root, "part")
+        self.assertIsNone(caught.exception.details["observed"]["byteSnapshot"])
+
+    def test_compile_reuse_and_context_verify_frozen_ancestors(self):
+        import agent_api
+        from agent_protocol import binding, SCHEMA
+        self.register(self.path, self.original)
+        updated = self.revision(self.path, self.original, "target-change")
+        updated["dimensions_mm"]["x"]["value"] += 1
+        next_path = self.save("next.json", updated)
+        self.register(next_path, updated)
+        source, scene, preview = [self.root / name for name in ("model.py", "scene.json", "preview.png")]
+        source.write_text("# fixture source\n")
+        scene.write_text("{}")
+        preview.write_bytes(b"fixture preview")
+        report = agent_api.save(self.root, ".a3d-agent/runs/cached.json", {
+            "schema": cad_compile.RESULT_SCHEMA,
+            "runId": "cached", "status": "awaiting-visual-review", "pass": True,
+            "issues": [], "artifacts": {"preview": binding(preview)}})
+        inputs = {"intent": binding(next_path), "source": binding(source),
+                  "profile": binding(self.root / "profile.json")}
+        agent_api.save(self.root, ".a3d-agent/state.json", {"schema": SCHEMA, "latest": {
+            "report": binding(report), "runId": "cached", "operation": "compile", "inputs": inputs,
+            "scene": str(scene), "outputs": {"preview": binding(preview)},
+            "capabilityVersion": agent_api.capability_version()}})
+        args = {"phase": "compile", "source": source.name, "scene": scene.name, "intent": next_path.name}
+        self.assertTrue(agent_api.dispatch(self.root, "build", args)["reused"])
+        self.path.write_bytes(self.path.read_bytes() + b"\n")
+        self.assertFalse(agent_api.context(self.root, {})["latest"]["inputsCurrent"])
+        failed = agent_api.dispatch(self.root, "build", args)
+        self.assertFalse(failed["reused"])
+        self.assertFalse(failed["pass"])
+        self.assertEqual(failed["items"][0]["code"], "CONTRACT.INTENT_HISTORY_UNVERIFIED")
 
     def test_legacy_migration_uses_saved_hash_and_rejects_unverifiable_history(self):
         self.save("part_compile-result.json", {"inputs": {"intent": str(self.path)}})

@@ -59,7 +59,7 @@ PLACED_OPENING_KINDS = {
 }
 PRINT_PACKAGE_MODES = {"co_print_body", "separate_parts"}
 INTENT_SCHEMA = "evidence-cad-intent/v5"
-BUILD_SCHEMA = "evidence-a3d-build/v1"
+BUILD_SCHEMA = "evidence-a3d-build/v2"
 
 
 class Audit:
@@ -207,7 +207,7 @@ def _bound_scene(report: dict, report_path: str) -> dict:
     if _digest(str(scene_path)) != expected_hash:
         raise ValueError("build report scene binding does not match its SHA-256")
     scene = _load_json(str(scene_path))
-    if scene.get("schema") != "evidence-semantic-scene/v1":
+    if scene.get("schema") != "evidence-semantic-scene/v2":
         raise ValueError("build report scene binding has an unsupported schema")
     return scene
 

@@ -26,14 +26,14 @@ and validates the resulting scene.
 The source builds BRep solids, binds their features with `write_scene`, and
 exports `<intent.part>_report.json`: use `export_part` for one printed body,
 `export_assembly` for separate printed parts, or `export_regions` for volumetric
-color regions inside a body. Genuine STEP masters and their derived STL, GLB
+color regions inside a body. Genuine STEP masters and their derived STL, STEP
 and 3MF outputs pass through the same public compile boundary.
 
 The driver snapshots the selected source, intent and printer profile by SHA-256,
 size and timestamp before execution, and rejects changes during the run. It
 creates a separate UUID-bound attempt marker immediately before the
 attempt's outputs. After unified build validation, it renders the current
-hash-bound GLB for visual diagnosis. It then runs declared installation checks
+hash-bound STEP previews for visual diagnosis. It then runs declared installation checks
 against the final semantic STEP parts, applicable multipart assembly
 checks, per-part and plate STL QA, STEP QA for every genuine STEP, 3MF
 color/package QA, and a final freshness audit over this attempt's outputs.
@@ -119,7 +119,7 @@ or stop after a valid early render, the result exposes `diagnosticPreview`,
 `diagnosticReferencePreview`, and `diagnosticRenderEvidence` for that run.
 Use these current-run paths to inspect and improve the current source.
 When layout fails before a complete build report, the source may preserve a
-diagnostic STEP, GLB and preview. The compiler independently verifies the
+diagnostic STEP and preview. The compiler independently verifies the
 candidate's run ID, input bindings and artifact freshness before exposing
 `diagnosticStep`, `diagnosticGlb` and `diagnosticPreview`. These artifacts are for
 geometry inspection and never count as successful manufacture or final QA.

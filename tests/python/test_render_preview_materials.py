@@ -20,23 +20,16 @@ import render_preview  # noqa: E402
 
 
 class RenderPreviewMaterialTests(unittest.TestCase):
-    def test_glb_node_materials_survive_the_visual_evidence_render(self):
+    def test_step_object_materials_survive_the_visual_evidence_render(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            scene = trimesh.Scene()
-            red = trimesh.creation.box(extents=[4, 4, 4])
-            red.visual = trimesh.visual.TextureVisuals(
-                material=PBRMaterial(baseColorFactor=[255, 0, 0, 255])
-            )
-            green = trimesh.creation.box(extents=[4, 4, 4])
-            green.apply_translation([5, 0, 0])
-            green.visual = trimesh.visual.TextureVisuals(
-                material=PBRMaterial(baseColorFactor=[0, 255, 0, 255])
-            )
-            scene.add_geometry(red, node_name="body/red-region")
-            scene.add_geometry(green, node_name="body/green-region")
-            model = root / "colored-display.glb"
-            model.write_bytes(scene.export(file_type="glb"))
+            from build123d import Box, Pos
+            from display_step import export_display_step
+            model = root / "colored-display.step"
+            export_display_step([
+                ("body/red-region", Box(4, 4, 4), {"baseColor": "#FF0000"}),
+                ("body/green-region", Pos(5, 0, 0) * Box(4, 4, 4), {"baseColor": "#00FF00"}),
+            ], model)
 
             inputs = render_preview._render_inputs(model, (1, 2, 3))
             self.assertEqual(

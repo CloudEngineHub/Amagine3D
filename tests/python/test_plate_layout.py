@@ -55,7 +55,7 @@ COORDINATE_SYSTEM = {
 def _write_scene(root: Path, intent_path: Path) -> Path:
     scene_path = root / "shelf-case_scene.json"
     scene_path.write_text(json.dumps({
-        "schema": "evidence-semantic-scene/v1",
+        "schema": "evidence-semantic-scene/v2",
         "revision": "plate-layout-test-001",
         "intentRef": {
             "path": str(intent_path),

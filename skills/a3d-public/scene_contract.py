@@ -18,6 +18,7 @@ import sys
 from typing import Any
 
 from capability_registry import capability_for_connection, connection_kinds
+from cad_diagnostics import ContractIssue
 from intent_contract import (
     feature_owner_map as intent_feature_owner_map,
     physical_part_names as intent_physical_part_names,
@@ -25,7 +26,7 @@ from intent_contract import (
 )
 
 
-SCENE_SCHEMA = "evidence-semantic-scene/v1"
+SCENE_SCHEMA = "evidence-semantic-scene/v2"
 INTENT_SCHEMAS = {"evidence-cad-intent/v5"}
 REPRESENTATION_MASTERS = {"brep"}
 ROLES = {"solid", "cutter", "separate", "display-only"}
@@ -280,10 +281,23 @@ def _validate_interface_intent_alignment(
         implementation = implementation_by_id[interface_id]
         path = f"interfaces[{interface_id}]"
         if implementation.get("kind") not in SELF_TAPPING_LOCATOR_KINDS:
-            errors.append(
+            allowed = sorted(SELF_TAPPING_LOCATOR_KINDS)
+            observed = implementation.get("kind")
+            errors.append(ContractIssue(
                 f"{path}.kind must be one of the locator kinds declared for "
-                "self-tapping interfaces"
-            )
+                "self-tapping interfaces",
+                rule_id="self-tapping-locator-kind",
+                field=f"{path}.kind",
+                interface_id=interface_id,
+                subject_id=interface_id,
+                actual=observed,
+                expected=allowed,
+                repair_hint=(
+                    f"Set interfaces[{interface_id}].kind to one of {allowed} "
+                    f"for this self-tapping locator; observed {observed!r}. Keep "
+                    "the immutable locator features and part ownership unchanged."
+                ),
+            ))
         endpoints = {
             name: implementation.get(name)
             for name in ("male", "female")
@@ -1433,14 +1447,12 @@ def validate(data: dict, base_dir: Path | None = None) -> list[str]:
                 else:
                     unknown = set(artifacts) - {
                         "masterStep",
-                        "physicalGlb",
                         "manufacturingStl",
                     }
                     for key in sorted(unknown):
                         errors.append(f"{path}.artifacts.{key} is unsupported")
                     for key, suffixes, allow_names in (
                         ("masterStep", (".step", ".stp"), False),
-                        ("physicalGlb", (".glb", ".gltf"), True),
                         ("manufacturingStl", (".stl",), False),
                     ):
                         if key not in artifacts:
@@ -1481,7 +1493,7 @@ def validate(data: dict, base_dir: Path | None = None) -> list[str]:
                 and isinstance(artifacts, dict)
                 and any(
                     key in artifacts
-                    for key in ("manufacturingStl", "physicalGlb")
+                    for key in ("manufacturingStl",)
                 )
                 and not isinstance(master_step, dict)
             ):
@@ -1611,7 +1623,7 @@ def validate(data: dict, base_dir: Path | None = None) -> list[str]:
                         )
                     parameters = recipe.get("parameters") if isinstance(recipe, dict) else None
                     source_mesh = (
-                        parameters.get("sourceMesh")
+                        parameters.get("sourceStep")
                         if isinstance(parameters, dict)
                         else None
                     )
@@ -1624,7 +1636,7 @@ def validate(data: dict, base_dir: Path | None = None) -> list[str]:
                         )
                     ):
                         errors.append(
-                            f"{path}.recipe.parameters.sourceMesh is required for "
+                            f"{path}.recipe.parameters.sourceStep is required for "
                             "recipe.kind displayComponent"
                         )
                     appearance = (

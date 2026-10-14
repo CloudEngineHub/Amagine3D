@@ -10,6 +10,7 @@ import re
 import sys
 
 from capability_registry import capability_for_connection, connection_kinds
+from cad_diagnostics import ContractIssue
 
 
 MODES = {
@@ -531,10 +532,14 @@ def validate_manufacturing(
                 elif requires_clearance and (
                     not isinstance(clearances, dict) or not clearances
                 ):
-                    errors.append(
+                    errors.append(ContractIssue(
                         f"manufacturing.interfaces[{index}].clearances_mm must be a "
-                        "non-empty object of named dimension deltas"
-                    )
+                        "non-empty object of named dimension deltas",
+                        rule_id="intent.interface.clearances", field=f"/manufacturing/interfaces/{index}/clearances_mm",
+                        interface_id=interface.get("id"), actual=clearances,
+                        expected={"type": "object", "minProperties": 1, "values": "finite non-negative mm"},
+                        repair_hint="Declare named full female-minus-male dimensional deltas from the required fit. See $AMAGINE3D_RUNTIME_DIR/references/multipart-connections.md; self-tapping screws use fastening instead.",
+                    ))
                 elif not requires_clearance and "clearances_mm" in interface and (
                     not isinstance(clearances, dict) or clearances
                 ):
@@ -561,9 +566,13 @@ def validate_manufacturing(
                     capability and "engagement" in capability.get("geometryChecks", ())
                 )
                 if requires_engagement and not _positive_number(interface.get("engagement_mm")):
-                    errors.append(
-                        f"manufacturing.interfaces[{index}].engagement_mm must be positive"
-                    )
+                    errors.append(ContractIssue(
+                        f"manufacturing.interfaces[{index}].engagement_mm must be positive",
+                        rule_id="intent.interface.engagement", field=f"/manufacturing/interfaces/{index}/engagement_mm",
+                        interface_id=interface.get("id"), actual=interface.get("engagement_mm"),
+                        expected={"type": "number", "finite": True, "exclusiveMinimum": 0},
+                        repair_hint="Specify required engagement in mm independently of failed geometry. See $AMAGINE3D_SKILL_DIR/examples/installed_module_intent.json for the screw contract structure.",
+                    ))
                 elif not requires_engagement and "engagement_mm" in interface and not _non_negative_number(interface["engagement_mm"]):
                     errors.append(
                         f"manufacturing.interfaces[{index}].engagement_mm must be finite and non-negative when supplied"
@@ -583,10 +592,14 @@ def validate_manufacturing(
                 elif feature_ids is not None and not set(interface_features).issubset(
                     feature_ids
                 ):
-                    errors.append(
+                    errors.append(ContractIssue(
                         "manufacturing.interfaces"
-                        f"[{index}].features reference unknown feature IDs"
-                    )
+                        f"[{index}].features reference unknown feature IDs",
+                        rule_id="intent.interface.features", field=f"/manufacturing/interfaces/{index}/features",
+                        interface_id=interface.get("id"), actual=interface_features,
+                        expected={"declaredFeatureIds": sorted(feature_ids)},
+                        repair_hint="Use feature IDs declared in the top-level features array, owned by the between parts. Screw clearance/pilot/boss and locator endpoints must match their DSL bindings.",
+                    ))
                 elif (
                     feature_owners is not None
                     and isinstance(between, list)
@@ -683,6 +696,20 @@ def validate_color_regions(
     if len(names) != len(set(names)):
         errors.append("color region names must be unique")
     return errors
+
+
+def whole_part_color_regions(data: dict, parts: set[str]) -> dict | None:
+    """Resolve whole-part colors by owner while retaining the declared region IDs."""
+    regions = data.get("color_regions")
+    if regions is None:
+        return None
+    errors = validate_color_regions(regions, data.get("manufacturing"), data.get("part"))
+    if errors:
+        raise ValueError("invalid whole-part colors: " + "; ".join(errors))
+    by_part = {region["part"]: region for region in regions}
+    if len(regions) != len(parts) or set(by_part) != parts:
+        raise ValueError("whole-part export requires exactly one color region per physical part; internal color regions need their own geometry/export path")
+    return by_part
 
 
 def validate_coordinate_system(coordinate_system) -> list[str]:
@@ -803,7 +830,12 @@ def validate_feature_ownership(
         owner = feature.get("part")
         if mode == "multipart":
             if not isinstance(owner, str) or not ID_PATTERN.fullmatch(owner):
-                errors.append(f"features[{index}].part is required for multipart")
+                errors.append(ContractIssue(
+                    f"features[{index}].part is required for multipart",
+                    rule_id="intent.feature.owner", field=f"/features/{index}/part",
+                    feature_id=feature_id, actual=owner, expected={"choices": sorted(part_names)},
+                    repair_hint="Assign the physical part name from manufacturing.parts; component/display nodes do not replace a physical owner.",
+                ))
                 continue
             if part_names and owner not in part_names:
                 errors.append(
@@ -916,7 +948,11 @@ def validate(data: dict, base_dir: Path | None = None) -> list[str]:
     features = data.get("features")
     ids: list[str] = []
     if not isinstance(features, list) or not features:
-        errors.append("features must be a non-empty list")
+        errors.append(ContractIssue(
+            "features must be a non-empty list", rule_id="intent.features", field="/features",
+            actual=features, expected={"type": "array", "minItems": 1, "requiredFields": ["id", "kind", "evidence", "acceptance"]},
+            repair_hint="Declare accepted requirements in the top-level features array; multipart entries also need part. See $AMAGINE3D_SKILL_DIR/examples/installed_module_intent.json. Design nodes and manufacturing.parts do not replace this array.",
+        ))
     else:
         for index, feature in enumerate(features):
             if not isinstance(feature, dict):
@@ -1037,10 +1073,13 @@ def validate(data: dict, base_dir: Path | None = None) -> list[str]:
                 else "separate_parts"
             )
             if package_mode != expected_package_mode:
-                errors.append(
+                errors.append(ContractIssue(
                     f"{manufacturing_mode} colors require "
-                    f"printability.print_package_mode {expected_package_mode}"
-                )
+                    f"printability.print_package_mode {expected_package_mode}",
+                    rule_id="intent.color.package", field="/printability/print_package_mode",
+                    actual=package_mode, expected={"choices": [expected_package_mode]},
+                    repair_hint="Set the package mode for the declared manufactured parts; whole-part colors must refer to real separately printable parts.",
+                ))
     return errors
 
 

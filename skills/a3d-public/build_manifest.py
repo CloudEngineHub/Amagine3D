@@ -24,16 +24,15 @@ from material_plan import validate_material_plan, validate_material_sources
 from intent_contract import DEFAULT_DIMENSION_PRECISION_MM, dimension_measurement_precision_mm
 
 
-BUILD_SCHEMA = "evidence-a3d-build/v1"
+BUILD_SCHEMA = "evidence-a3d-build/v2"
 BUILD_BACKENDS = {
     "brep-assembly",
     "brep-color-regions",
     "brep-part",
-    "hybrid-mesh",
 }
 ARTIFACT_REQUIREMENTS = {"not-applicable", "required"}
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
-EXPORT_AUDIT_SCHEMA = "evidence-export-audit/v1"
+EXPORT_AUDIT_SCHEMA = "evidence-export-audit/v2"
 SEMANTIC_ENVELOPE_TOLERANCE_MM = 0.5
 # Ordinary dimension allowance; individual intent targets may tighten it.
 BREP_ENVELOPE_TOLERANCE_MM = DEFAULT_DIMENSION_PRECISION_MM
@@ -1032,7 +1031,7 @@ def validate_manifest(data: Any) -> list[str]:
     else:
         expected_input_schemas = {
             "intent": "evidence-cad-intent/v5",
-            "scene": "evidence-semantic-scene/v1",
+            "scene": "evidence-semantic-scene/v2",
             "profile": "evidence-bambu-printer-profile/v1",
         }
         for name, expected_schema in expected_input_schemas.items():
@@ -1195,7 +1194,7 @@ def validate_manifest(data: Any) -> list[str]:
                 errors.append(f"artifacts.{name}.sha256 must be a lowercase SHA-256")
         expected_frames = {
             "3mf": "plate-print",
-            "glb:display": "semantic",
+            "step:display": "semantic",
             "stl": "plate-print",
         }
         for plate in print_plates(data):
@@ -1248,7 +1247,7 @@ def validate_manifest(data: Any) -> list[str]:
                     expected_audited = {
                         key
                         for key in artifacts
-                        if key == "glb:display"
+                        if key == "step:display"
                         or key == "stl"
                         or key.startswith("stl:")
                         or key.startswith("step:")
@@ -1259,7 +1258,7 @@ def validate_manifest(data: Any) -> list[str]:
                     if set(audited) != expected_audited:
                         errors.append(
                             "backendData.exportAudit.artifacts must exactly cover "
-                            "every owned STL, STEP, and display GLB artifact"
+                            "every owned STL, STEP, and display STEP artifact"
                         )
                     for key, audit_record in audited.items():
                         label = f"backendData.exportAudit.artifacts.{key}"
@@ -1295,9 +1294,9 @@ def validate_manifest(data: Any) -> list[str]:
             if not isinstance(requirements, dict):
                 errors.append(f"{path} must be an object")
                 continue
-            if set(requirements) != {"glb", "step", "stl", "threeMf"}:
+            if set(requirements) != {"displayStep", "step", "stl", "threeMf"}:
                 errors.append(
-                    f"{path} must contain exactly glb, step, stl, and threeMf"
+                    f"{path} must contain exactly displayStep, step, stl, and threeMf"
                 )
                 continue
             for kind, status in requirements.items():
@@ -1305,8 +1304,8 @@ def validate_manifest(data: Any) -> list[str]:
                     errors.append(
                         f"{path}.{kind} must be required or not-applicable"
                     )
-            if requirements.get("glb") != "required":
-                errors.append(f"{path}.glb must be required")
+            if requirements.get("displayStep") != "required":
+                errors.append(f"{path}.displayStep must be required")
             if requirements.get("stl") != "required":
                 errors.append(f"{path}.stl must be required")
             master = (
@@ -1337,7 +1336,7 @@ def validate_manifest(data: Any) -> list[str]:
             )
 
         artifact_keys = set(artifacts) if isinstance(artifacts, dict) else set()
-        for common_key in ("glb:display",):
+        for common_key in ("step:display",):
             if common_key not in artifact_keys:
                 errors.append(f"artifacts.{common_key} is required")
         for part_id in part_ids:
@@ -1350,7 +1349,7 @@ def validate_manifest(data: Any) -> list[str]:
             if master == "mesh" and step_key in artifact_keys:
                 errors.append(f"artifacts.{step_key} is forbidden for a mesh master")
         expected_artifact_keys = {
-            "glb:display",
+            "step:display",
             *(f"stl:{part_id}" for part_id in part_ids),
         }
         if backend == "brep-part":
@@ -1522,6 +1521,19 @@ def file_binding_errors(data: Any, base_dir: Path) -> list[str]:
         records.extend(
             (f"artifacts.{name}", record) for name, record in artifacts.items()
         )
+    if isinstance(artifacts, dict) and isinstance(artifacts.get("step:display"), dict):
+        display = artifacts["step:display"]
+        descriptor_ref = display.get("scene")
+        if data.get("schema") == BUILD_SCHEMA and not isinstance(descriptor_ref, dict):
+            errors.append("artifacts.step:display.scene is required")
+        if isinstance(descriptor_ref, dict):
+            records.append(("artifacts.step:display.scene", descriptor_ref))
+            descriptor = _bound_json(descriptor_ref, base_dir)
+            if not isinstance(descriptor, dict) or descriptor.get("schema") != "a3d-step-display/v1" or descriptor.get("step", {}).get("sha256") != display.get("sha256"):
+                errors.append("display scene does not bind the current STEP")
+            else:
+                for index, obj in enumerate(descriptor.get("objects", [])):
+                    records.append((f"display.objects.{index}", obj.get("step")))
     for label, record in records:
         if not isinstance(record, dict):
             continue
@@ -1719,7 +1731,7 @@ def semantic_evidence_errors(data: Any, base_dir: Path) -> list[str]:
         if (
             not isinstance(consistency, dict)
             or consistency.get("schema")
-            != "evidence-shape-consistency-manifest/v1"
+            != "evidence-shape-consistency-manifest/v2"
             or consistency.get("pass") is not True
             or consistency.get("revision") != data.get("revision")
             or consistency.get("skippedParts") != []

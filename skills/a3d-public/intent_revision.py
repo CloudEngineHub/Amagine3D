@@ -27,6 +27,24 @@ class IntentRevisionError(ValueError):
         self.verified_history = deepcopy(verified_history)
 
 
+class IntentHistoryError(ValueError):
+    def __init__(self, message: str, *, details: dict):
+        super().__init__(message)
+        self.details = details
+
+
+def lineage_issue(error: Exception) -> dict:
+    """Expose recoverable byte bindings without changing a recorded target."""
+    return {
+        "severity": "error", "stage": "intent-revision", "path": "intent",
+        "code": "CONTRACT.INTENT_HISTORY_UNVERIFIED" if isinstance(error, IntentHistoryError)
+                else "CONTRACT.INTENT_REVISION_UNVERIFIED",
+        "message": str(error),
+        "repairHint": "Preserve the frozen intent. A legitimate target revision needs a new file linked to the current parent path/SHA and its request/evidence; see $AMAGINE3D_RUNTIME_DIR/references/evidence-contract.md.",
+        **getattr(error, "details", {}),
+    }
+
+
 def digest(path: Path) -> str:
     return sha256(path.read_bytes()).hexdigest()
 
@@ -144,20 +162,45 @@ def history_path(workspace: Path, model: str) -> Path:
     return workspace / f".{model}_intent-history.json"
 
 
-def _entry(path: Path, document: dict, *, changes: list[dict] | None = None) -> dict:
-    return {
-        "path": str(path), "sha256": digest(path), "snapshot": deepcopy(document),
+def _freeze_bytes(workspace: Path, raw: bytes) -> dict:
+    """Keep original bytes, including field order, spacing and final newline."""
+    checksum = sha256(raw).hexdigest()
+    destination = (workspace / ".a3d-agent" / "intents" / f"{checksum}.json").resolve()
+    if not _inside(workspace, destination):
+        raise ValueError("intent byte snapshot is outside this session workspace")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with destination.open("xb") as stream:
+            stream.write(raw)
+    except FileExistsError:
+        if destination.read_bytes() != raw:
+            raise ValueError("recorded intent byte snapshot changed")
+    return {"path": str(destination), "sha256": checksum}
+
+
+def _entry(workspace: Path, path: Path, document: dict, *, changes: list[dict] | None = None,
+           persist_snapshots: bool = True) -> dict:
+    raw = path.read_bytes()
+    if json.loads(raw) != document:
+        raise ValueError("intent changed while recording its immutable snapshot")
+    result = {
+        "path": str(path), "sha256": sha256(raw).hexdigest(), "snapshot": deepcopy(document),
         "parentHash": document.get("revision", {}).get("parent", {}).get("sha256"),
         "changes": changes or [],
     }
+    if persist_snapshots:
+        result["byteSnapshot"] = _freeze_bytes(workspace, raw)
+    return result
 
 
 def _inside(workspace: Path, path: Path) -> bool:
     return path.is_relative_to(workspace)
 
 
-def load_history(workspace: Path, model: str) -> dict:
+def load_history(workspace: Path, model: str, *, persist_snapshots: bool = True) -> dict:
     """Read verified history, or migrate only the saved legacy input binding."""
+    if not isinstance(model, str) or not re.fullmatch(r"[a-z][a-z0-9_-]*", model):
+        raise ValueError("intent history model must be a valid part ID")
     workspace = workspace.resolve()
     path = history_path(workspace, model)
     if path.exists():
@@ -186,7 +229,7 @@ def load_history(workspace: Path, model: str) -> dict:
             expected_hash = prior_repair.get("intentHash") or report_binding.get("sha256")
             if expected_hash != previous_hash or previous.get("part") != model or previous.get("schema") != INTENT_SCHEMA:
                 raise ValueError("existing intent history is unverified: prior immutable hash/model does not match")
-            history["entries"][previous_hash] = _entry(previous_path, previous)
+            history["entries"][previous_hash] = _entry(workspace, previous_path, previous, persist_snapshots=persist_snapshots)
             history["headHash"] = previous_hash
 
     entries = history.get("entries")
@@ -197,13 +240,34 @@ def load_history(workspace: Path, model: str) -> dict:
         raise ValueError("intent history head snapshot is missing")
     # Existing paths remain immutable, even when called with a different source.
     for entry in entries.values():
-        original_path = Path(entry["path"])
-        if not _inside(workspace, original_path) or not original_path.is_file() or digest(original_path) != entry["sha256"] or _read(original_path) != entry["snapshot"]:
-            raise ValueError("recorded immutable intent file changed or is unavailable")
+        original_path = Path(entry["path"]).resolve()
+        if not _inside(workspace, original_path):
+            raise ValueError("recorded immutable intent path is outside this session workspace")
+        byte_ref = entry.get("byteSnapshot")
+        if byte_ref is not None:
+            byte_path = Path(byte_ref["path"]).resolve()
+            if (not _inside(workspace, byte_path) or byte_ref["sha256"] != entry["sha256"]
+                    or not byte_path.is_file() or digest(byte_path) != entry["sha256"]):
+                raise ValueError("recorded intent byte snapshot changed or is unavailable")
+        actual = digest(original_path) if original_path.is_file() else None
+        if actual != entry["sha256"] or _read(original_path) != entry["snapshot"]:
+            raise IntentHistoryError("recorded immutable intent file changed or is unavailable", details={
+                "field": "/intent", "subjectId": model,
+                "observed": {"path": str(original_path), "sha256": actual, "byteSnapshot": byte_ref},
+                "expected": {"sha256": entry["sha256"]},
+                "repairHint": ("For an accidental overwrite, copy the verified byteSnapshot.path back to observed.path, preserving its bytes. For a genuine target revision, keep that parent and write a new linked intent file."
+                               if byte_ref else "No original-byte snapshot exists for this legacy intent. Recover its original file from a verified backup; do not recreate its bytes by guessing JSON formatting or change the recorded SHA."),
+            })
+        if byte_ref is None and persist_snapshots:
+            raw = original_path.read_bytes()
+            if sha256(raw).hexdigest() != entry["sha256"]:
+                raise ValueError("intent changed while archiving its verified original bytes")
+            entry["byteSnapshot"] = _freeze_bytes(workspace, raw)
     return history
 
 
-def audit_lineage(workspace: Path, intent_path: Path, document: dict) -> tuple[dict, dict]:
+def audit_lineage(workspace: Path, intent_path: Path, document: dict, *,
+                  persist_snapshots: bool = True) -> tuple[dict, dict]:
     """Build a proposed history update. Caller publishes it atomically if valid.
 
     Unknown legacy history is rejected explicitly, never discarded or recovered
@@ -211,7 +275,9 @@ def audit_lineage(workspace: Path, intent_path: Path, document: dict) -> tuple[d
     """
     workspace, intent_path = workspace.resolve(), intent_path.resolve()
     model = document["part"]
-    history = load_history(workspace, model)
+    if not _inside(workspace, intent_path):
+        raise ValueError("intent is outside this session workspace")
+    history = load_history(workspace, model, persist_snapshots=persist_snapshots)
     entries, head = history["entries"], history["headHash"]
     current_hash = digest(intent_path)
     changes: list[dict] = []
@@ -229,12 +295,12 @@ def audit_lineage(workspace: Path, intent_path: Path, document: dict) -> tuple[d
         if document["revision"]["parent"]["sha256"] != head or parent_path != Path(entries[head]["path"]):
             raise IntentRevisionError("new intent must reference the current recorded parent path and hash", history)
         changes = semantic_diff(entries[head]["snapshot"], document)
-        entries[current_hash] = _entry(intent_path, document, changes=changes)
+        entries[current_hash] = _entry(workspace, intent_path, document, changes=changes, persist_snapshots=persist_snapshots)
         history["headHash"] = current_hash
     else:
         if "revision" in document:
             raise ValueError("revision parent has no verified session baseline; compile its root intent first")
-        entries[current_hash] = _entry(intent_path, document)
+        entries[current_hash] = _entry(workspace, intent_path, document, persist_snapshots=persist_snapshots)
         history["headHash"] = current_hash
     cursor = current_hash
     seen: set[str] = set()

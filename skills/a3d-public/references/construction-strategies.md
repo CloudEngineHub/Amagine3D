@@ -68,7 +68,7 @@ change the split, orientation, or fastening strategy. Keep the parts as separate
 valid BRep solids. Use `export_assembly()` and pass `part_name=` to each
 `observe()`, checked cut, and checked finish. Declare each part and its bound
 nodes through `write_scene(...)`. The public compile path provides genuine
-STEP masters, individual print meshes, the print-bed layout, 3MF and display GLB.
+STEP masters, individual print meshes, the print-bed layout, 3MF and display STEP.
 
 Load `multipart-connections.md` only for direct fastening into printed plastic
 or the serviceable-enclosure closure described there.
@@ -76,7 +76,7 @@ or the serviceable-enclosure closure described there.
 ## build123d guardrails
 
 - Primitive alignment is explicit. Print artifacts are normalized to Z0 by the
-  exporter; assembly STEP and display GLB files preserve object/assembly intent.
+  exporter; assembly STEP and display STEP files preserve object/assembly intent.
 - Cutting tools extend beyond both target faces to avoid coplanar ambiguity.
 - Define named datum variables for semantic faces, such as `FRONT_Y`,
   `BACK_Y`, `BOTTOM_Z`, and `TOP_Z`, then derive cut positions from those

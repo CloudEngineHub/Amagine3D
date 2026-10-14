@@ -1,4 +1,4 @@
-"""Create orthographic visual evidence for semantic display GLB or print meshes."""
+"""Create orthographic visual evidence for semantic display STEP or print meshes."""
 
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ def _visual_color(
     mesh: trimesh.Trimesh,
     fallback: tuple[int, int, int],
 ) -> tuple[int, int, int]:
-    """Preserve a uniform GLB/3MF material color when one is available."""
+    """Preserve a uniform STEP/3MF material color when one is available."""
 
     material = getattr(mesh.visual, "material", None)
     candidates = (
@@ -76,13 +76,17 @@ def _visual_color(
 def _render_inputs(source: Path, fallback: tuple[int, int, int]) -> list[MeshInput]:
     """Load every transformed scene node instead of flattening material regions."""
 
-    # Processing can weld the coincident vertices that carry different normals
-    # at a GLB hard edge. Keep its authored display topology and NORMAL data.
-    authored_normals = source.suffix.lower() in {".glb", ".gltf"}
-    loaded = trimesh.load(source, force="scene", process=not authored_normals)
+    if source.suffix.lower() in {".step", ".stp"}:
+        from display_step import step_meshes
+        items, _ = step_meshes(source)
+        return [MeshInput(name, mesh, tuple(int(style["baseColor"][i:i+2], 16) for i in (1, 3, 5)), source)
+                for name, mesh, style in items]
+    if source.suffix.lower() not in {".stl", ".3mf"}:
+        raise ValueError("preview expects STEP, STL or 3MF")
+    loaded = trimesh.load(source, force="scene", process=True)
     if not isinstance(loaded, trimesh.Scene):
         raise ValueError(f"no renderable scene in {source}")
-    preserve_material = source.suffix.lower() in {".3mf", ".glb", ".gltf"}
+    preserve_material = source.suffix.lower() in {".3mf"}
     inputs: list[MeshInput] = []
     for node_name in sorted(loaded.graph.nodes_geometry):
         transform, geometry_name = loaded.graph[node_name]
@@ -132,7 +136,7 @@ def main() -> int:
     parser.add_argument(
         "--part",
         action="append",
-        help="Additional STL, 3MF, or GLB to include in one preview",
+        help="Additional STEP, STL or 3MF to include in one preview",
     )
     parser.add_argument("--out")
     parser.add_argument("--size", type=int, default=DEFAULT_OUTPUT_SIZE)
@@ -238,6 +242,8 @@ def main() -> int:
             matched_stats.buffer_bytes if matched_stats is not None else 0,
         )
         result = {
+            "sourceScenes": list({str(item.path): item.mesh.metadata["stepProvenance"]
+                                  for item in inputs if "stepProvenance" in item.mesh.metadata}.values()),
             "checks": surface_checks,
             "dimensions_mm": [round(float(value), 4) for value in dimensions],
             "meshes": [
@@ -266,7 +272,7 @@ def main() -> int:
             },
             "projection": "orthographic",
             "renderer": "cpu-z-buffer/v1",
-            "schema": "evidence-render/v2",
+            "schema": "evidence-render/v3",
             "supported_views": list(SUPPORTED_VIEWS),
             "views": list(CONTACT_VIEWS),
         }

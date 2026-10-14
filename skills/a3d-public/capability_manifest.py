@@ -115,7 +115,7 @@ def _function_signatures(path: Path, public_names: set[str]) -> list[dict[str, A
                     "name": statement.name,
                     "parameters": [argument.arg for argument in [*args.posonlyargs, *args.args, *args.kwonlyargs]],
                     "signature": f"{statement.name}({ast.unparse(args)})",
-                    "description": (ast.get_docstring(statement) or "").split("\n\n")[0],
+                    "description": (ast.get_docstring(statement) or ""),
                 })
             for method in statement.body:
                 if isinstance(method, ast.FunctionDef) and not method.name.startswith("_"):
@@ -124,7 +124,7 @@ def _function_signatures(path: Path, public_names: set[str]) -> list[dict[str, A
                         "name": name,
                         "parameters": [argument.arg for argument in [*method.args.posonlyargs, *method.args.args, *method.args.kwonlyargs]],
                         "signature": f"{name}({ast.unparse(method.args)})",
-                        "description": (ast.get_docstring(method) or "").split("\n\n")[0],
+                        "description": (ast.get_docstring(method) or ""),
                     })
             continue
         if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -139,9 +139,29 @@ def _function_signatures(path: Path, public_names: set[str]) -> list[dict[str, A
                 "name": statement.name,
                 "parameters": positional + keywords,
                 "signature": f"{statement.name}({ast.unparse(statement.args)})",
-                "description": (ast.get_docstring(statement) or "").split("\n\n")[0],
+                "description": (ast.get_docstring(statement) or ""),
             }
         )
+    # Negative-membership guards publish the same legal vocabulary that the
+    # implementation enforces, including bind(..., boss_mode=...). Avoid a
+    # separately maintained enum that could drift from the recipe.
+    functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef):
+            functions.update({f"{node.name}.{method.name}": method for method in node.body if isinstance(method, ast.FunctionDef)})
+    for record in signatures:
+        function = functions.get(record["name"])
+        choices = {}
+        if function is not None:
+            for condition in ast.walk(function):
+                if (isinstance(condition, ast.Compare) and len(condition.ops) == 1
+                        and isinstance(condition.ops[0], ast.NotIn) and isinstance(condition.left, ast.Name)
+                        and condition.left.id in record["parameters"]
+                        and isinstance(condition.comparators[0], (ast.Tuple, ast.List, ast.Set))
+                        and all(isinstance(item, ast.Constant) and isinstance(item.value, str) for item in condition.comparators[0].elts)):
+                    choices[condition.left.id] = sorted(item.value for item in condition.comparators[0].elts)
+        if choices:
+            record["parameterChoices"] = choices
     return sorted(signatures, key=lambda item: item["name"])
 
 
@@ -358,29 +378,29 @@ MODE_CAPABILITIES = [
     {
         "id": "brep-part",
         "physicalAuthority": "build123d solid",
-        "outputs": ["STEP", "STL", "display GLB"],
+        "outputs": ["STEP", "STL", "display STEP"],
         "requirements": [
             "one valid solid",
             "named parameters",
-            "scene display-only nodes remain GLB-only",
+            "scene display-only nodes remain display STEP only",
             "unit scale",
         ],
     },
     {
         "id": "brep-assembly",
         "physicalAuthority": "labeled build123d solids",
-        "outputs": ["part STEP", "assembly STEP", "part STL", "plate STL", "display GLB"],
+        "outputs": ["part STEP", "assembly STEP", "part STL", "plate STL", "display STEP"],
         "requirements": [
             "one valid solid per manufactured part",
             "source-authored placement",
             "declared interfaces",
-            "scene display-only nodes remain GLB-only",
+            "scene display-only nodes remain display STEP only",
         ],
     },
     {
         "id": "manufactured-color-regions",
         "physicalAuthority": "exclusive BRep volumetric regions of physical parts",
-        "outputs": ["region or part STL", "colored 3MF", "display GLB"],
+        "outputs": ["region or part STL", "colored 3MF", "display STEP"],
         "requirements": [
             "build the complete physical part before partitioning",
             "watertight regions",
@@ -530,6 +550,7 @@ def build_manifest(symbols: Iterable[str] = ()) -> dict[str, Any]:
     ]
     manifest = {
         "schema": CAPABILITY_SCHEMA,
+        "implementationSha256": sha256(b"".join(file.relative_to(root).as_posix().encode() + file.read_bytes() for file in sorted(root.rglob("*.py")))).hexdigest(),
         "runtime": {
             "build123d": _module_version("build123d"),
             "manifold3d": _module_version("manifold3d"),
@@ -565,7 +586,7 @@ def build_manifest(symbols: Iterable[str] = ()) -> dict[str, Any]:
                 "use key-section lofts for product envelopes; ruled transitions are acceptable when the form permits",
                 "use named parameters and source-authored coordinate frames",
                 "derive mating geometry from one clearance recipe",
-                "derive bound feature meshes and final STEP, STL, 3MF and GLB from the authored BRep geometry",
+                "derive bound feature meshes and final STEP, STL, 3MF and STEP from the authored BRep geometry",
                 "build the complete physical part before manufactured-color partitioning",
                 "keep display-only decoration outside manufacturing geometry",
             ],

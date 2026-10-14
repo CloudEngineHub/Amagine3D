@@ -45,7 +45,7 @@ _interface_geometry = _load_local_module(
 audit_report_interfaces = _interface_geometry.audit_report_interfaces
 
 
-BUILD_SCHEMA = "evidence-a3d-build/v1"
+BUILD_SCHEMA = "evidence-a3d-build/v2"
 
 
 def _digest(path: Path) -> str:
@@ -220,7 +220,7 @@ def _audit_hybrid_report(
 
     artifact_map = report.get("artifacts")
     artifact_map = artifact_map if isinstance(artifact_map, dict) else {}
-    required_keys = {"glb:display", "stl"} | {
+    required_keys = {"step:display", "stl"} | {
         f"stl:{part_name}" for part_name in part_names
     }
     for part_name, record in part_map.items():
@@ -490,7 +490,7 @@ def audit_report(
     artifacts = report.get("artifacts")
     artifact_map = artifacts if isinstance(artifacts, dict) else {}
     expected_keys = {f"stl:{part_name}" for part_name in part_names} | {
-        "glb:display",
+        "step:display",
         "stl",
         "step:assembly",
         *{f"step:{part_name}" for part_name in part_names},
