@@ -18,8 +18,11 @@ import {
   codexReasoningEffort,
   CodexRuntime,
   DEFAULT_CAD_SYSTEM,
+  ModelIncompleteResponseError,
   ModelOutputLimitError,
+  normalizeTurnUsage,
   type RuntimeEvent,
+  type TurnUsage,
 } from '../src/index.ts';
 
 const SESSION_ID = '3b0d4f25-1707-4cc8-92cf-6f5c28edfc93';
@@ -726,6 +729,7 @@ test('never accepts a retried summary after max_output_tokens as a completed tur
       (error: unknown) => {
         assert.ok(error instanceof ModelOutputLimitError);
         assert.equal(error.code, 'model_output_limit');
+        assert.deepEqual(error.diagnostic, { eventIndex: 4, threadId: 'limited-thread', completionSeen: true });
         assert.match(error.message, /max_output_tokens/u);
         return true;
       },
@@ -777,6 +781,258 @@ test('requires an explicit turn.completed event before accepting assistant text'
       }),
       /ended before turn completion/u,
     );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test('requires a final reply after the last work item, with or without message phase', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'amagine-codex-final-reply-'));
+  const message = (text: string, phase?: 'commentary' | 'final_answer'): ThreadEvent => ({
+    type: 'item.completed',
+    item: { id: 'message', type: 'agent_message', text, ...(phase ? { phase } : {}) },
+  });
+  const command = (id: string): ThreadEvent => ({
+    type: 'item.completed',
+    item: { id, type: 'command_execution', command: 'a3d agent capabilities <batch>',
+      aggregated_output: '{}', exit_code: 0, status: 'completed' },
+  });
+  const reasoning: ThreadEvent = {
+    type: 'item.completed', item: { id: 'reasoning', type: 'reasoning', text: '' },
+  };
+  const work = [command('batch-1'), command('batch-2'), reasoning];
+  const usage = { input_tokens: 170650, cached_input_tokens: 148864,
+    cache_write_input_tokens: 0, output_tokens: 10092, reasoning_output_tokens: 8857 };
+  const cases: { name: string; items: ThreadEvent[]; final?: string }[] = [
+    { name: 'commentary cannot be final even without later work', items: [message('查询合同', 'commentary')] },
+    { name: 'a later tool invalidates unphased progress', items: [message('查询合同'), command('batch')] },
+    { name: 'later reasoning invalidates unphased progress', items: [message('查询合同'), reasoning] },
+    { name: 'latest failed session sequence stays incomplete', items: [message('我分批查询所需的建模操作合同（上限 20 个）。'), ...work] },
+    { name: 'reasoning alone is incomplete', items: [reasoning] },
+    { name: 'blank final reply is incomplete', items: [message('  ')] },
+    { name: 'a new streaming reply invalidates the old candidate', items: [message('此前回复'), {
+      type: 'item.started', item: { id: 'new-message', type: 'agent_message', text: '继续处理' },
+    }] },
+    { name: 'a final unphased reply after work is accepted', items: [message('查询合同'), ...work, message('完成')], final: '完成' },
+    { name: 'explicit final_answer after work is accepted', items: [message('查询合同', 'commentary'), ...work, message('完成', 'final_answer')], final: '完成' },
+    { name: 'todo bookkeeping after a final reply does not invalidate it', items: [message('完成'), {
+      type: 'item.completed', item: { id: 'todo', type: 'todo_list', items: [{ text: '已完成', completed: true }] },
+    }], final: '完成' },
+  ];
+  try {
+    for (const scenario of cases) await t.test(scenario.name, async () => {
+      const observed: RuntimeEvent[] = [];
+      const runtime = await CodexRuntime.create(root, {
+        environment: { LLM_API_KEY: 'test-key', PATH: '/usr/bin' },
+        clientFactory: () => {
+          const thread = {
+            id: 'final-reply-thread',
+            async runStreamed() {
+              async function* events(): AsyncGenerator<ThreadEvent> {
+                yield { type: 'thread.started', thread_id: thread.id };
+                yield { type: 'turn.started' };
+                yield* scenario.items;
+                yield { type: 'turn.completed', usage };
+              }
+              return { events: events() };
+            },
+          };
+          return { startThread: () => thread, resumeThread: () => thread };
+        },
+      });
+      const result = runtime.runTurn({
+        imagePaths: [], message: 'build', sessionId: SESSION_ID, taskType: 'cad',
+        onEvent: (event) => { observed.push(event); },
+      });
+      if (scenario.final) {
+        assert.equal((await result).finalResponse, scenario.final);
+      } else {
+        await assert.rejects(result, (error: unknown) => {
+          assert.ok(error instanceof ModelIncompleteResponseError);
+          assert.equal(error.code, 'model_incomplete_response');
+          assert.deepEqual(error.diagnostic, {
+            eventIndex: scenario.items.length + 3, threadId: 'final-reply-thread', completionSeen: true,
+          });
+          return true;
+        });
+      }
+      assert.deepEqual(observed.at(-1), { type: 'turn.completed', usage: normalizeTurnUsage(usage) });
+      for (const phase of ['commentary', 'final_answer'] as const) {
+        const source = scenario.items.find((event) => 'item' in event && 'phase' in event.item && event.item.phase === phase);
+        if (source) assert.ok(observed.some((event) => 'item' in event && event.item.type === 'agent_message' && event.item.phase === phase));
+      }
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('keeps only SDK-reported non-negative integer usage counts', () => {
+  assert.deepEqual(normalizeTurnUsage(undefined), undefined);
+  assert.deepEqual(normalizeTurnUsage({}), undefined);
+  assert.deepEqual(normalizeTurnUsage('usage'), undefined);
+  // A reported zero is data; a missing field stays unknown instead of becoming 0.
+  assert.deepEqual(normalizeTurnUsage({
+    cache_write_input_tokens: 0,
+    cached_input_tokens: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    reasoning_output_tokens: 0,
+  }), {
+    cacheWriteInputTokens: 0,
+    cachedInputTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+  });
+  assert.deepEqual(normalizeTurnUsage({
+    cached_input_tokens: -1,
+    cache_write_input_tokens: 1.5,
+    input_tokens: Number.NaN,
+    output_tokens: Number.POSITIVE_INFINITY,
+    reasoning_output_tokens: 12,
+  }), { reasoningOutputTokens: 12 });
+  assert.deepEqual(normalizeTurnUsage({ input_tokens: 2 ** 53 }), undefined);
+  assert.deepEqual(normalizeTurnUsage({ input_tokens: 7 }), { inputTokens: 7 });
+});
+
+test('reports one turn usage snapshot on both the event and the turn result', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'amagine-codex-usage-'));
+  const observed: RuntimeEvent[] = [];
+  try {
+    const runtime = await CodexRuntime.create(root, {
+      environment: { LLM_API_KEY: 'test-key', PATH: '/usr/bin' },
+      clientFactory: () => {
+        const thread = {
+          id: 'usage-thread',
+          async runStreamed() {
+            async function* events(): AsyncGenerator<ThreadEvent> {
+              yield { thread_id: 'usage-thread', type: 'thread.started' };
+              yield { type: 'turn.started' };
+              yield {
+                item: { id: 'message-1', text: '完成', type: 'agent_message' },
+                type: 'item.completed',
+              };
+              yield {
+                type: 'turn.completed',
+                usage: {
+                  cache_write_input_tokens: 3,
+                  cached_input_tokens: 40,
+                  input_tokens: 100,
+                  output_tokens: 25,
+                  reasoning_output_tokens: 9,
+                },
+              };
+              // A duplicate report of the same snapshot replaces, never adds.
+              yield {
+                type: 'turn.completed',
+                usage: {
+                  cache_write_input_tokens: 3,
+                  cached_input_tokens: 40,
+                  input_tokens: 100,
+                  output_tokens: 25,
+                  reasoning_output_tokens: 9,
+                },
+              };
+            }
+            return { events: events() };
+          },
+        };
+        return { startThread: () => thread, resumeThread: () => thread };
+      },
+    });
+
+    const result = await runtime.runTurn({
+      imagePaths: [],
+      message: 'build',
+      onEvent: (event) => {
+        observed.push(event);
+      },
+      sessionId: SESSION_ID,
+      taskType: 'cad',
+    });
+
+    const expected: TurnUsage = {
+      cacheWriteInputTokens: 3,
+      cachedInputTokens: 40,
+      inputTokens: 100,
+      outputTokens: 25,
+      reasoningOutputTokens: 9,
+    };
+    const completions = observed.filter(
+      (event): event is Extract<RuntimeEvent, { type: 'turn.completed' }> =>
+        event.type === 'turn.completed',
+    );
+    assert.equal(completions.length, 2);
+    for (const completion of completions) assert.deepEqual(completion.usage, expected);
+    assert.deepEqual(result.usage, expected);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test('keeps reported usage when the turn fails after the completion event', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'amagine-codex-usage-fail-'));
+  const observed: RuntimeEvent[] = [];
+  try {
+    const runtime = await CodexRuntime.create(root, {
+      environment: { LLM_API_KEY: 'test-key', PATH: '/usr/bin' },
+      clientFactory: () => {
+        const thread = {
+          id: 'usage-fail-thread',
+          async runStreamed() {
+            async function* events(): AsyncGenerator<ThreadEvent> {
+              yield { thread_id: 'usage-fail-thread', type: 'thread.started' };
+              yield { type: 'turn.started' };
+              yield {
+                type: 'turn.completed',
+                usage: {
+                  cache_write_input_tokens: 1,
+                  cached_input_tokens: 2,
+                  input_tokens: 30,
+                  output_tokens: 4,
+                  reasoning_output_tokens: 5,
+                },
+              };
+              yield {
+                message:
+                  'Incomplete response returned, reason: max_output_tokens',
+                type: 'error',
+              };
+            }
+            return { events: events() };
+          },
+        };
+        return { startThread: () => thread, resumeThread: () => thread };
+      },
+    });
+
+    await assert.rejects(
+      runtime.runTurn({
+        imagePaths: [],
+        message: 'build',
+        onEvent: (event) => {
+          observed.push(event);
+        },
+        sessionId: SESSION_ID,
+        taskType: 'cad',
+      }),
+      ModelOutputLimitError,
+    );
+
+    // Usage is evidence of what the attempt cost, independent of whether the
+    // task completed: the truncated turn still keeps its reported counts.
+    const completion = observed.find(
+      (event): event is Extract<RuntimeEvent, { type: 'turn.completed' }> =>
+        event.type === 'turn.completed',
+    );
+    assert.deepEqual(completion?.usage, {
+      cacheWriteInputTokens: 1,
+      cachedInputTokens: 2,
+      inputTokens: 30,
+      outputTokens: 4,
+      reasoningOutputTokens: 5,
+    });
   } finally {
     await rm(root, { force: true, recursive: true });
   }

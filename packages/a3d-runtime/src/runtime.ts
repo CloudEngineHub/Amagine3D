@@ -17,7 +17,11 @@ import {
   type CadSystem,
 } from './cad-systems.ts';
 import { CompileProgressExtractor } from './compile-progress.ts';
-import { normalizeThreadEvent, type RuntimeEvent } from './events.ts';
+import {
+  normalizeThreadEvent,
+  type RuntimeEvent,
+  type TurnUsage,
+} from './events.ts';
 import { createTavilySearchBroker } from './tavily-search-broker.ts';
 
 export type RuntimeSearchBackend = 'codex-hosted' | 'disabled' | 'tavily';
@@ -43,16 +47,30 @@ export interface CodexTurnRequest {
 export interface CodexTurnResult {
   finalResponse: string;
   threadId: string;
+  /**
+   * The same SDK-reported turn usage already delivered as a `turn.completed`
+   * event. Present only when the SDK reported counts for this turn.
+   */
+  usage?: TurnUsage;
 }
 
 export class ModelOutputLimitError extends Error {
   readonly code = 'model_output_limit';
 
-  constructor() {
+  constructor(readonly diagnostic?: { eventIndex: number; threadId?: string; completionSeen: boolean }) {
     super(
       '模型输出达到 max_output_tokens 上限；本轮不完整，未接受随后返回的摘要或部分回复。',
     );
     this.name = 'ModelOutputLimitError';
+  }
+}
+
+export class ModelIncompleteResponseError extends Error {
+  readonly code = 'model_incomplete_response';
+
+  constructor(readonly diagnostic: { eventIndex: number; threadId: string; completionSeen: boolean }) {
+    super('模型运行已结束，但没有有效的最终回复；本轮未完成。');
+    this.name = 'ModelIncompleteResponseError';
   }
 }
 
@@ -468,56 +486,84 @@ export class CodexRuntime implements CodexRuntimeLike {
     let finalResponse = '';
     let lastRuntimeError = '';
     let outputLimitReached = false;
+    let outputLimitEventIndex = -1;
+    let eventIndex = 0;
     let turnCompleted = false;
+    let turnUsage: TurnUsage | undefined;
     let threadId = request.threadId;
     const compileProgress = new CompileProgressExtractor();
-    for await (const event of events) {
-      if (event.type === 'thread.started') {
-        threadId = event.thread_id;
-        await request.onThreadStarted?.(event.thread_id);
-      }
-      if (
-        event.type === 'item.completed' &&
-        event.item.type === 'agent_message'
-      ) {
-        finalResponse = event.item.text;
-      }
-      const normalized = normalizeThreadEvent(event);
-      const progressEvents = compileProgress.extract(event).map(
-        (progress): RuntimeEvent => ({
-          ...progress,
-          type: 'cad.compile.progress',
-        }),
-      );
-      if (event.type === 'item.started') {
-        await request.onEvent?.(normalized);
-        for (const progress of progressEvents) {
-          await request.onEvent?.(progress);
+    try {
+      for await (const event of events) {
+        eventIndex += 1;
+        if (event.type === 'thread.started') {
+          threadId = event.thread_id;
+          await request.onThreadStarted?.(event.thread_id);
         }
-      } else {
-        for (const progress of progressEvents) {
-          await request.onEvent?.(progress);
+        const normalized = normalizeThreadEvent(event);
+        if (normalized.type === 'item.completed' && normalized.item.type === 'agent_message') {
+          finalResponse = normalized.item.phase === 'commentary' ? '' : normalized.item.text;
+        } else if ('item' in normalized && normalized.item.type !== 'todo_list') {
+          // Without phase, later work makes an earlier message a progress
+          // update. Only a subsequent completed message can be the final reply.
+          finalResponse = '';
         }
-        await request.onEvent?.(normalized);
+        if (normalized.type === 'turn.completed' && normalized.usage) {
+          // The event and the returned result expose one snapshot; keep the last
+          // report for the turn rather than accumulating a second copy.
+          turnUsage = normalized.usage;
+        }
+        const progressEvents = compileProgress.extract(event).map(
+          (progress): RuntimeEvent => ({
+            ...progress,
+            type: 'cad.compile.progress',
+          }),
+        );
+        if (event.type === 'item.started') {
+          await request.onEvent?.(normalized);
+          for (const progress of progressEvents) {
+            await request.onEvent?.(progress);
+          }
+        } else {
+          for (const progress of progressEvents) {
+            await request.onEvent?.(progress);
+          }
+          await request.onEvent?.(normalized);
+        }
+        if (event.type === 'turn.completed') turnCompleted = true;
+        if (event.type === 'turn.failed') throw new Error(event.error.message);
+        if (event.type === 'error') {
+          lastRuntimeError = event.message;
+          if (!outputLimitReached && MAX_OUTPUT_TOKENS_ERROR.test(event.message)) {
+            outputLimitReached = true;
+            outputLimitEventIndex = eventIndex;
+          }
+        }
       }
-      if (event.type === 'turn.completed') turnCompleted = true;
-      if (event.type === 'turn.failed') throw new Error(event.error.message);
-      if (event.type === 'error') {
-        lastRuntimeError = event.message;
-        outputLimitReached ||= MAX_OUTPUT_TOKENS_ERROR.test(event.message);
-      }
+    } catch (error) {
+      if (outputLimitReached) throw new ModelOutputLimitError({
+        eventIndex: outputLimitEventIndex, threadId: threadId ?? thread.id ?? undefined, completionSeen: turnCompleted,
+      });
+      throw error;
     }
     const resolvedThreadId = threadId || thread.id;
     if (!resolvedThreadId) throw new Error('A3D runtime did not return a thread id.');
-    if (outputLimitReached) throw new ModelOutputLimitError();
+    if (outputLimitReached) throw new ModelOutputLimitError({
+      eventIndex: outputLimitEventIndex, threadId: resolvedThreadId, completionSeen: turnCompleted,
+    });
     if (!turnCompleted) {
       throw new Error(
         lastRuntimeError || 'A3D response stream ended before turn completion.',
       );
     }
     if (!finalResponse.trim()) {
-      throw new Error(lastRuntimeError || 'A3D did not return a final response.');
+      throw new ModelIncompleteResponseError({
+        eventIndex, threadId: resolvedThreadId, completionSeen: turnCompleted,
+      });
     }
-    return { finalResponse, threadId: resolvedThreadId };
+    return {
+      finalResponse,
+      threadId: resolvedThreadId,
+      ...(turnUsage ? { usage: turnUsage } : {}),
+    };
   }
 }
