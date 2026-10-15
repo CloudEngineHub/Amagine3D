@@ -95,6 +95,27 @@ export function printPreviewForSelection(
   return artifacts.find((artifact) => artifact.path === model?.primaryPreviewPath && printableArtifact(artifact)) ?? preferredPrintPreviewArtifact(artifacts);
 }
 
+/** One preview per plate, restricted to the exact design and build being viewed. */
+export function printPlatePreviews(
+  artifacts: readonly ArtifactSummary[],
+  current: ArtifactSummary | undefined,
+): ArtifactSummary[] {
+  if (!current || current.partId || !printableArtifact(current)) return [];
+  if (!current.buildId || !current.plateId) return [current];
+  const plates = new Map<string, ArtifactSummary[]>();
+  for (const artifact of artifacts) {
+    if (!artifact.plateId || artifact.partId || !printableArtifact(artifact) ||
+        artifact.buildId !== current.buildId || artifact.designId !== current.designId ||
+        artifact.modelId !== current.modelId) continue;
+    const files = plates.get(artifact.plateId) ?? [];
+    files.push(artifact);
+    plates.set(artifact.plateId, files);
+  }
+  return [...plates]
+    .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
+    .map(([, files]) => files.find(({ path }) => path === current.path) ?? preferredPrintPreviewArtifact(files)!);
+}
+
 export function displayPreviewForSelection(
   artifacts: readonly ArtifactSummary[],
   selected: ArtifactSummary | undefined,

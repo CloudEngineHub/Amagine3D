@@ -46,6 +46,14 @@ interface CadViewerProps {
   artifact?: ArtifactSummary;
   hideReferenceComponents?: boolean;
   onStatusChange?: (status: ViewerStatus) => void;
+  plateNavigation?: {
+    label: string;
+    positionLabel: string;
+    previousLabel: string;
+    nextLabel: string;
+    onPrevious?: () => void;
+    onNext?: () => void;
+  };
 }
 
 function disposeMaterial(material: Material): void {
@@ -118,20 +126,24 @@ async function parseModel(
 function ToolButton({
   children,
   disabled = false,
+  label,
   onClick,
   pressed,
 }: {
   children: ReactNode;
   disabled?: boolean;
-  onClick: () => void;
+  label?: string;
+  onClick?: () => void;
   pressed?: boolean;
 }) {
   return (
     <button
+      aria-label={label}
       aria-pressed={pressed}
       className={styles.toolButton}
       disabled={disabled}
       onClick={onClick}
+      title={label}
       type="button"
     >
       {children}
@@ -161,6 +173,7 @@ export function CadViewer({
   artifact,
   hideReferenceComponents = false,
   onStatusChange,
+  plateNavigation,
 }: CadViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
@@ -373,36 +386,60 @@ export function CadViewer({
           ref={canvasRef}
           tabIndex={ready ? 0 : -1}
         />
-        <div className={styles.selectionTools} aria-label="Selection mode" role="group">
-          <ToolButton disabled={!ready} onClick={() => undefined} pressed={ready}>
-            Face
-          </ToolButton>
-          <ToolButton disabled onClick={() => undefined}>Edge</ToolButton>
-          <ToolButton disabled onClick={() => undefined}>Point</ToolButton>
-          <ToolButton disabled={!ready} onClick={() => undefined}>Orbit</ToolButton>
-        </div>
-        <div className={styles.viewTools} aria-label="Camera views" role="group">
-          <ToolButton disabled={!ready} onClick={() => controllerRef.current?.fit()}>
-            Fit
-          </ToolButton>
-          <ToolButton
-            disabled={!ready}
-            onClick={() => controllerRef.current?.setView('isometric')}
-          >
-            ISO
-          </ToolButton>
-          <ToolButton
-            disabled={!ready}
-            onClick={() => controllerRef.current?.setView('front')}
-          >
-            Front
-          </ToolButton>
-          <ToolButton
-            disabled={!ready}
-            onClick={() => controllerRef.current?.setView('top')}
-          >
-            Top
-          </ToolButton>
+        <div className={styles.stageTools} data-plates={Boolean(plateNavigation)}>
+          <div className={styles.selectionTools} aria-label="Selection mode" role="group">
+            <ToolButton disabled={!ready} onClick={() => undefined} pressed={ready}>
+              Face
+            </ToolButton>
+            <ToolButton disabled onClick={() => undefined}>Edge</ToolButton>
+            <ToolButton disabled onClick={() => undefined}>Point</ToolButton>
+            <ToolButton disabled={!ready} onClick={() => undefined}>Orbit</ToolButton>
+          </div>
+          {plateNavigation ? (
+            <div
+              aria-label={plateNavigation.label}
+              className={styles.plateTools}
+              onKeyDown={(event) => {
+                const move = event.key === 'ArrowLeft' ? plateNavigation.onPrevious
+                  : event.key === 'ArrowRight' ? plateNavigation.onNext : undefined;
+                if (!move) return;
+                event.preventDefault();
+                move();
+              }}
+              role="group"
+            >
+              <ToolButton disabled={!plateNavigation.onPrevious} label={plateNavigation.previousLabel} onClick={plateNavigation.onPrevious}>
+                <svg aria-hidden="true" fill="none" viewBox="0 0 16 16"><path d="m10 3-5 5 5 5" /></svg>
+              </ToolButton>
+              <span aria-atomic="true" aria-live="polite" className={styles.platePosition}>{plateNavigation.positionLabel}</span>
+              <ToolButton disabled={!plateNavigation.onNext} label={plateNavigation.nextLabel} onClick={plateNavigation.onNext}>
+                <svg aria-hidden="true" fill="none" viewBox="0 0 16 16"><path d="m6 3 5 5-5 5" /></svg>
+              </ToolButton>
+            </div>
+          ) : null}
+          <div className={styles.viewTools} aria-label="Camera views" role="group">
+            <ToolButton disabled={!ready} onClick={() => controllerRef.current?.fit()}>
+              Fit
+            </ToolButton>
+            <ToolButton
+              disabled={!ready}
+              onClick={() => controllerRef.current?.setView('isometric')}
+            >
+              ISO
+            </ToolButton>
+            <ToolButton
+              disabled={!ready}
+              onClick={() => controllerRef.current?.setView('front')}
+            >
+              Front
+            </ToolButton>
+            <ToolButton
+              disabled={!ready}
+              onClick={() => controllerRef.current?.setView('top')}
+            >
+              Top
+            </ToolButton>
+          </div>
         </div>
 
         {state !== 'ready' && artifact?.previewImageUrl ? <img className={styles.previewImage} src={artifact.previewImageUrl} alt="CAD preview" /> : null}

@@ -6,6 +6,7 @@ import {
   fileSectionArtifacts,
   preferredDisplayPreviewArtifact,
   preferredPrintPreviewArtifact,
+  printPlatePreviews,
   printPreviewForSelection,
 } from '../src/lib/artifact-selection.ts';
 import type { ArtifactSummary, PreviewFormat } from '../src/types.ts';
@@ -54,6 +55,53 @@ test('keeps plate selection and hides individual parts and obsolete plates', () 
     assert.equal(printPreviewForSelection(artifacts, selected, { primaryPreviewPath: plates[0]!.path }), selected);
   }
   assert.equal(printPreviewForSelection(artifacts, display, { primaryPreviewPath: plates[0]!.path }), plates[0]);
+});
+
+test('lists each plate once in numeric order and prefers its 3MF preview', () => {
+  const plates = ['10', '02', '01'].flatMap((plateId) => (['stl', '3mf'] as const).map((format) => ({
+    ...model(`pair-plate-${plateId}.${format}`, format, '2026-10-15'),
+    buildId: 'current', designId: 'design:pair', modelId: 'pair', plateId,
+  })));
+  const current = plates.find(({ path }) => path === 'pair-plate-01.3mf')!;
+  assert.deepEqual(printPlatePreviews(plates, current).map(({ path }) => path), [
+    'pair-plate-01.3mf', 'pair-plate-02.3mf', 'pair-plate-10.3mf',
+  ]);
+  const stlOnly = plates.filter(({ path }) => path !== 'pair-plate-02.3mf');
+  assert.equal(printPlatePreviews(stlOnly, current)[1]?.format, 'stl');
+  const selectedStl = plates.find(({ path }) => path === 'pair-plate-02.stl')!;
+  assert.equal(printPlatePreviews(plates, selectedStl)[1], selectedStl);
+});
+
+test('plate navigation stays within the selected design and build, including history', () => {
+  const plate = (path: string, buildId: string, plateId: string): ArtifactSummary => ({
+    ...model(path, '3mf', '2026-10-15'), buildId, plateId, designId: 'design:pair', modelId: 'pair',
+  });
+  const current = plate('current/plate-01.3mf', 'current', '01');
+  const second = plate('current/plate-02.3mf', 'current', '02');
+  const history = plate('history/plate-01.3mf', 'history', '01');
+  const historySecond = plate('history/plate-02.3mf', 'history', '02');
+  const artifacts = [
+    current, second, history, historySecond,
+    { ...plate('other-design.3mf', 'current', '03'), designId: 'design:other' },
+    { ...plate('other-model.3mf', 'current', '04'), modelId: 'other' },
+    { ...plate('part.3mf', 'current', '05'), partId: 'shell' },
+    { ...plate('failed.3mf', 'current', '06'), status: 'failed' as const },
+    { ...plate('draft.3mf', 'current', '07'), status: 'draft' as const },
+    { ...plate('internal.3mf', 'current', '08'), purpose: 'internal-evidence' as const },
+  ];
+  assert.deepEqual(printPlatePreviews(artifacts, current), [current, second]);
+  assert.deepEqual(printPlatePreviews(artifacts, historySecond), [history, historySecond]);
+});
+
+test('does not invent plate groups for parts, drafts or unscoped legacy files', () => {
+  const legacy = model('legacy.3mf', '3mf', '2026-10-15');
+  const other = model('other.3mf', '3mf', '2026-10-15');
+  assert.deepEqual(printPlatePreviews([legacy, other], legacy), [legacy]);
+  const withoutBuild = { ...legacy, plateId: '01' };
+  assert.deepEqual(printPlatePreviews([withoutBuild, other], withoutBuild), [withoutBuild]);
+  assert.deepEqual(printPlatePreviews([], undefined), []);
+  assert.deepEqual(printPlatePreviews([legacy], { ...legacy, partId: 'shell' }), []);
+  assert.deepEqual(printPlatePreviews([legacy], { ...legacy, status: 'draft' }), []);
 });
 
 test('failed-build cutters and unknown files never become automatic product previews', () => {

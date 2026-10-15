@@ -49,6 +49,7 @@ import {
   defaultPreviewArtifact,
   displayPreviewForSelection,
   fileSectionArtifacts,
+  printPlatePreviews,
   printPreviewForSelection,
 } from '../lib/artifact-selection';
 import {
@@ -183,6 +184,10 @@ export function CadWorkbench({
       () => printPreviewForSelection(artifacts, selectedArtifact, activeParameterModel),
       [activeParameterModel, artifacts, selectedArtifact],
     );
+    const printPlates = useMemo(
+      () => printPlatePreviews(artifacts, printPreviewArtifact),
+      [artifacts, printPreviewArtifact],
+    );
     const previewArtifact = printPreview
       ? printPreviewArtifact ?? displayPreviewArtifact
       : displayPreviewArtifact ?? printPreviewArtifact;
@@ -214,11 +219,11 @@ export function CadWorkbench({
       );
     }
 
-    function selectArtifact(artifact: ArtifactSummary) {
+    function selectArtifact(artifact: ArtifactSummary, revealFiles = true) {
       followLatestRef.current = false;
       setFollowLatest(false);
       setSelectedPath(artifact.path);
-      if (artifact.kind === 'model' || artifact.kind === 'image') {
+      if (revealFiles && (artifact.kind === 'model' || artifact.kind === 'image')) {
         setLeftView('files');
       }
       if (artifact.kind === 'model') {
@@ -968,8 +973,10 @@ export function CadWorkbench({
             availablePreview={!followLatest && latestPreview?.path !== selectedPath &&
               (!latestPreview?.buildId || latestPreview.buildId !== selectedArtifact?.buildId) ? latestPreview : undefined}
             onShowLatest={followLatestPreview}
+            onSelectPrintPlate={(artifact) => selectArtifact(artifact, false)}
             onTogglePrintPreview={() => setPrintPreview((enabled) => !enabled)}
             previewArtifact={previewArtifact}
+            printPlates={printPlates}
             printPreview={showingPrintPreview}
             printPreviewAvailable={Boolean(
               displayPreviewArtifact && printPreviewArtifact,

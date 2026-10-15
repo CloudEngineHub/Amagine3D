@@ -87,6 +87,7 @@
 
 .stage {
   position: relative;
+  container: cad-stage / inline-size;
   min-width: 0;
   block-size: 28rem;
   overflow: clip;
@@ -119,12 +120,22 @@
   outline-offset: -4px;
 }
 
-.selectionTools,
-.viewTools {
+.stageTools {
   position: absolute;
   z-index: var(--z-raised);
   inset-block-start: var(--space-sm);
-  max-width: calc(100% - 2 * var(--space-sm));
+  inset-inline: var(--space-sm);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-xs);
+  pointer-events: none;
+}
+
+.selectionTools,
+.plateTools,
+.viewTools {
+  max-width: 100%;
   gap: var(--space-3xs);
   padding: var(--space-2xs);
   border: 0;
@@ -135,14 +146,89 @@
     0 4px 12px rgb(0 0 0 / 0.07),
     0 1px 2px rgb(0 0 0 / 0.06);
   backdrop-filter: blur(12px);
+  pointer-events: auto;
 }
 
 .selectionTools {
-  inset-inline-start: var(--space-sm);
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: start;
+}
+
+.plateTools {
+  display: flex;
+  grid-column: 2;
+  grid-row: 1;
+  align-items: center;
+  justify-self: center;
+}
+
+.plateTools .toolButton {
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+}
+
+.plateTools svg {
+  display: block;
+  width: 1rem;
+  height: 1rem;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+
+.platePosition {
+  min-width: 5.5rem;
+  padding-inline: var(--space-2xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
 }
 
 .viewTools {
-  inset-inline-end: var(--space-sm);
+  grid-column: 3;
+  grid-row: 1;
+  justify-self: end;
+}
+
+@container cad-stage (max-width: 44rem) {
+  .stageTools {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .plateTools {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .viewTools {
+    grid-column: 2;
+  }
+}
+
+@container cad-stage (max-width: 28rem) {
+  .stageTools {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .selectionTools,
+  .viewTools {
+    grid-column: 1;
+    justify-self: center;
+  }
+
+  .viewTools {
+    grid-row: 2;
+  }
+
+  .stageTools[data-plates='true'] .viewTools {
+    grid-row: 3;
+  }
 }
 
 .readout {

@@ -21,8 +21,10 @@ interface PreviewPanelProps {
   onShowLatest: () => void;
   cadArtifact?: ArtifactSummary;
   language: Language;
+  onSelectPrintPlate: (artifact: ArtifactSummary) => void;
   onTogglePrintPreview: () => void;
   previewArtifact: ArtifactSummary | undefined;
+  printPlates: ArtifactSummary[];
   printPreview: boolean;
   printPreviewAvailable: boolean;
   running: boolean;
@@ -36,8 +38,10 @@ export function PreviewPanel({
   onShowLatest,
   cadArtifact,
   language,
+  onSelectPrintPlate,
   onTogglePrintPreview,
   previewArtifact,
+  printPlates,
   printPreview,
   printPreviewAvailable,
   running,
@@ -60,6 +64,10 @@ export function PreviewPanel({
       : previewArtifact;
   const assemblyPreview = selectedArtifact?.kind !== 'image'
     && selectedText === undefined && previewArtifact?.format === 'step' && !previewArtifact.partId;
+  const printLayoutPreview = selectedArtifact?.kind !== 'image'
+    && selectedText === undefined && printPreview && !previewArtifact?.partId;
+  const activePlateIndex = printPlates.findIndex((artifact) => artifact.path === previewArtifact?.path);
+  const showPlateNavigation = printLayoutPreview && printPlates.length > 1 && activePlateIndex >= 0;
   const referenceInfo = viewerStatus.referenceComponents;
   const canHideReferences = assemblyPreview && viewerStatus.state === 'ready'
     && (referenceInfo?.referenceMeshes ?? 0) > 0;
@@ -83,7 +91,8 @@ export function PreviewPanel({
         <div className={styles.canvasHeading}>
           <div className={styles.canvasHeadingCopy}>
             <h2>{headingArtifact?.partId ? text(`Part · ${headingArtifact.partId}`, `子部件 · ${headingArtifact.partId}`)
-              : assemblyPreview ? text('Assembly preview', '整机预览') : headingArtifact?.name ?? text('Model preview', '模型预览')}</h2>
+              : assemblyPreview ? text('Assembly preview', '整机预览')
+                : printLayoutPreview ? text('Print layout', '打印排盘') : headingArtifact?.name ?? text('Model preview', '模型预览')}</h2>
             {availablePreview ? <span role="status"><button className={styles.latestPreview} type="button" onClick={onShowLatest}>
               {availablePreview.status === 'draft' ? text('New draft available · view', '新草稿已就绪 · 查看') : text('Latest preview available · view', '最新预览已就绪 · 查看')}
             </button></span> : null}
@@ -129,8 +138,8 @@ export function PreviewPanel({
             onClick={onTogglePrintPreview}
             role="switch"
             title={text(
-              'Show the separate 3MF or STL print layout',
-              '查看单独的 3MF 或 STL 打印排盘文件',
+              'Switch between the assembly and print plates',
+              '在整机预览与打印排盘之间切换',
             )}
             type="button"
           >
@@ -174,6 +183,14 @@ export function PreviewPanel({
               artifact={previewArtifact}
               hideReferenceComponents={hideReferences}
               onStatusChange={setViewerStatus}
+              plateNavigation={showPlateNavigation ? {
+                label: text('Print plates', '打印盘'),
+                positionLabel: text(`Plate ${activePlateIndex + 1} / ${printPlates.length}`, `第 ${activePlateIndex + 1} / ${printPlates.length} 盘`),
+                previousLabel: text('Previous plate', '上一盘'),
+                nextLabel: text('Next plate', '下一盘'),
+                onPrevious: activePlateIndex > 0 ? () => onSelectPrintPlate(printPlates[activePlateIndex - 1]!) : undefined,
+                onNext: activePlateIndex < printPlates.length - 1 ? () => onSelectPrintPlate(printPlates[activePlateIndex + 1]!) : undefined,
+              } : undefined}
             />
           </Suspense>
         )}
