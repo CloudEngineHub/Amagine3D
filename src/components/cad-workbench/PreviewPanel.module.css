@@ -52,16 +52,6 @@
   white-space: nowrap;
 }
 
-.canvasLabel {
-  overflow: hidden;
-  color: var(--color-muted);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .latestPreview {
   padding: var(--space-3xs) 0;
   border: 0;

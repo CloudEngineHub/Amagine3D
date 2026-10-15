@@ -109,14 +109,15 @@ export function AppBarControls({
         ) : null}
       </div>
       <button
-        aria-label={text('New project', '新项目')}
+        aria-label={text('New session', '新会话')}
         className={styles.newProjectButton}
         disabled={disabled}
         onClick={onNewProject}
-        title={text('New project', '新项目')}
+        title={text('New session', '新会话')}
         type="button"
       >
         <ToolbarIcon name="new-run" />
+        <span>{text('New session', '新会话')}</span>
       </button>
       <button
         aria-disabled="true"

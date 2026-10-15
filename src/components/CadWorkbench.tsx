@@ -964,7 +964,6 @@ export function CadWorkbench({
 
           <PreviewPanel
             cadArtifact={selectedArtifact?.buildId && cadArtifact?.buildId !== selectedArtifact.buildId ? undefined : cadArtifact}
-            connectionStatus={connectionStatus}
             language={language}
             availablePreview={!followLatest && latestPreview?.path !== selectedPath &&
               (!latestPreview?.buildId || latestPreview.buildId !== selectedArtifact?.buildId) ? latestPreview : undefined}

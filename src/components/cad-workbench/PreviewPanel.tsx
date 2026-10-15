@@ -20,7 +20,6 @@ interface PreviewPanelProps {
   availablePreview?: ArtifactSummary;
   onShowLatest: () => void;
   cadArtifact?: ArtifactSummary;
-  connectionStatus: string | undefined;
   language: Language;
   onTogglePrintPreview: () => void;
   previewArtifact: ArtifactSummary | undefined;
@@ -36,7 +35,6 @@ export function PreviewPanel({
   availablePreview,
   onShowLatest,
   cadArtifact,
-  connectionStatus,
   language,
   onTogglePrintPreview,
   previewArtifact,
@@ -79,21 +77,6 @@ export function PreviewPanel({
       'This model has no labeled reference components to hide.',
       '此模型没有可单独隐藏的已标记参考元件。',
     );
-  const resultArtifact = previewArtifact ?? selectedArtifact;
-  const resultLabel = resultArtifact?.legacy ? resultArtifact.kind === 'other'
-    ? text('Historical attachment · STEP required for preview', '历史附件缺少 STEP，无法按新流程预览')
-    : text('Historical CAD result · no current checks', '历史 CAD 结果，尚未执行本轮检查') : resultArtifact?.inputsCurrent === false
-    ? text('Previous revision · rebuild required', '上一版结果，当前设计已变化')
-    : resultArtifact?.manufacturingStatus === 'passed' && resultArtifact.status === 'failed'
-      ? text('Manufacturing checks passed · retry preview', '制造检查已通过，预览待重试')
-    : resultArtifact?.status === 'draft'
-      ? text('Draft · assembly and print checks pending', '草稿，尚未完成装配与打印验证')
-      : resultArtifact?.status === 'failed' || resultArtifact?.status === 'diagnostic'
-        ? text('Diagnostic · unresolved checks remain', '诊断结果，仍有未通过项')
-        : resultArtifact?.status === 'validated'
-          ? resultArtifact.manufacturingStatus === 'pending'
-            ? text('CAD exports verified · manufacturing checks pending', 'CAD 导出已验证，制造检查待完成')
-            : text('Automatic checks passed · visual review required', '自动检查已通过，仍需视觉审查') : undefined;
   return (
     <section className={styles.centerPanel} aria-label={text('Model preview', '模型预览')}>
       <header className={styles.canvasToolbar}>
@@ -101,17 +84,9 @@ export function PreviewPanel({
           <div className={styles.canvasHeadingCopy}>
             <h2>{headingArtifact?.partId ? text(`Part · ${headingArtifact.partId}`, `子部件 · ${headingArtifact.partId}`)
               : assemblyPreview ? text('Assembly preview', '整机预览') : headingArtifact?.name ?? text('Model preview', '模型预览')}</h2>
-            {headingArtifact?.path ?? connectionStatus ? (
-              <span className={styles.canvasLabel}>
-                {headingArtifact?.path ?? connectionStatus}
-              </span>
-            ) : null}
-            {resultLabel ? <span className={styles.canvasLabel} role="status">{resultLabel}</span> : null}
             {availablePreview ? <span role="status"><button className={styles.latestPreview} type="button" onClick={onShowLatest}>
               {availablePreview.status === 'draft' ? text('New draft available · view', '新草稿已就绪 · 查看') : text('Latest preview available · view', '最新预览已就绪 · 查看')}
             </button></span> : null}
-            {cadArtifact && (!previewArtifact || previewArtifact.inputsCurrent === false) ?
-              <span className={styles.canvasLabel}>{text('Current CAD file saved; preview pending.', '当前 CAD 文件已保存，预览尚未就绪。')}</span> : null}
           </div>
         </div>
         <div className={styles.canvasMeta}>
