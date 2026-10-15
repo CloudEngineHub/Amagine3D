@@ -17,6 +17,8 @@ const CadViewer = lazy(() =>
 );
 
 interface PreviewPanelProps {
+  availablePreview?: ArtifactSummary;
+  onShowLatest: () => void;
   cadArtifact?: ArtifactSummary;
   connectionStatus: string | undefined;
   language: Language;
@@ -31,6 +33,8 @@ interface PreviewPanelProps {
 }
 
 export function PreviewPanel({
+  availablePreview,
+  onShowLatest,
   cadArtifact,
   connectionStatus,
   language,
@@ -57,7 +61,7 @@ export function PreviewPanel({
       ? selectedArtifact
       : previewArtifact;
   const assemblyPreview = selectedArtifact?.kind !== 'image'
-    && selectedText === undefined && previewArtifact?.format === 'step';
+    && selectedText === undefined && previewArtifact?.format === 'step' && !previewArtifact.partId;
   const referenceInfo = viewerStatus.referenceComponents;
   const canHideReferences = assemblyPreview && viewerStatus.state === 'ready'
     && (referenceInfo?.referenceMeshes ?? 0) > 0;
@@ -95,13 +99,17 @@ export function PreviewPanel({
       <header className={styles.canvasToolbar}>
         <div className={styles.canvasHeading}>
           <div className={styles.canvasHeadingCopy}>
-            <h2>{assemblyPreview ? text('Assembly preview', '整机预览') : headingArtifact?.name ?? text('Model preview', '模型预览')}</h2>
+            <h2>{headingArtifact?.partId ? text(`Part · ${headingArtifact.partId}`, `子部件 · ${headingArtifact.partId}`)
+              : assemblyPreview ? text('Assembly preview', '整机预览') : headingArtifact?.name ?? text('Model preview', '模型预览')}</h2>
             {headingArtifact?.path ?? connectionStatus ? (
               <span className={styles.canvasLabel}>
                 {headingArtifact?.path ?? connectionStatus}
               </span>
             ) : null}
             {resultLabel ? <span className={styles.canvasLabel} role="status">{resultLabel}</span> : null}
+            {availablePreview ? <span role="status"><button className={styles.latestPreview} type="button" onClick={onShowLatest}>
+              {availablePreview.status === 'draft' ? text('New draft available · view', '新草稿已就绪 · 查看') : text('Latest preview available · view', '最新预览已就绪 · 查看')}
+            </button></span> : null}
             {cadArtifact && (!previewArtifact || previewArtifact.inputsCurrent === false) ?
               <span className={styles.canvasLabel}>{text('Current CAD file saved; preview pending.', '当前 CAD 文件已保存，预览尚未就绪。')}</span> : null}
           </div>

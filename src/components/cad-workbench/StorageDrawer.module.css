@@ -285,7 +285,7 @@
   isolation: isolate;
   contain: paint;
   display: grid;
-  grid-template-columns: 1.125rem 1rem minmax(0, 1fr) auto;
+  grid-template-columns: 1.125rem 1.5rem minmax(0, 1fr) auto;
   min-height: 3rem;
   align-items: center;
   gap: var(--space-3xs);

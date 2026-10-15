@@ -23,6 +23,9 @@ function asBundledArtifact(artifact: ArtifactSummary): ArtifactSummary {
   const print = artifact.name === BUNDLED_POMODORO_PRINT;
   return {
     ...artifact,
+    designId: BUNDLED_POMODORO_ID,
+    modelId: BUNDLED_POMODORO_NAME,
+    buildId: BUNDLED_POMODORO_ID,
     featured: artifact.name === BUNDLED_POMODORO_PREVIEW,
     primary: artifact.name === BUNDLED_POMODORO_PREVIEW || print,
     purpose: artifact.name === BUNDLED_POMODORO_PREVIEW ? 'display-preview' : print ? 'print-package' : 'unclassified',

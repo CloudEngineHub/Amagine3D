@@ -8,7 +8,10 @@ interface ArtifactIconProps {
 }
 
 function artifactGlyph(artifact: ArtifactSummary): string {
-  if (artifact.kind === 'model') return '3D';
+  if (artifact.kind === 'model') {
+    const format = artifact.format ?? artifact.name.split('.').at(-1)?.toLowerCase();
+    return format === 'stl' || format === '3mf' ? format : '3D';
+  }
   if (artifact.kind === 'source') return 'PY';
   if (artifact.kind === 'image') return 'IMG';
   return '{}';

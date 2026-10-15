@@ -14,6 +14,7 @@ function modifiedTime(artifact: ArtifactSummary): number {
 
 /** Only declared build outputs and explicitly featured bundled models auto-open. */
 export function automaticPreviewEligible(artifact: ArtifactSummary): boolean {
+  if (artifact.partId && !artifact.primary) return false;
   if (artifact.purpose === 'internal-evidence') return false;
   if (artifact.purpose === 'unclassified' && !artifact.primary && !artifact.featured) return false;
   return artifact.kind === 'model' && Boolean(
@@ -87,10 +88,23 @@ export function printPreviewForSelection(
   selected: ArtifactSummary | undefined,
   model: { primaryPreviewPath: string } | undefined,
 ): ArtifactSummary | undefined {
+  if (selected?.partId && PRINT_PREVIEW_FORMATS.has(selected.format ?? '')) return selected;
   if (selected && printableArtifact(selected)) return selected;
   if (selected?.status === 'draft' || selected?.status === 'diagnostic' || selected?.status === 'failed') return undefined;
   if (selected?.buildId && !model) return preferredPrintPreviewArtifact(artifacts.filter((artifact) => artifact.buildId === selected.buildId));
   return artifacts.find((artifact) => artifact.path === model?.primaryPreviewPath && printableArtifact(artifact)) ?? preferredPrintPreviewArtifact(artifacts);
+}
+
+export function displayPreviewForSelection(
+  artifacts: readonly ArtifactSummary[],
+  selected: ArtifactSummary | undefined,
+  model: { displayPreviewPath: string } | undefined,
+): ArtifactSummary | undefined {
+  if (selected?.format === 'step') return selected;
+  if (selected?.partId) return undefined;
+  if (model) return artifacts.find((artifact) => artifact.path === model.displayPreviewPath);
+  if (selected?.buildId) return preferredDisplayPreviewArtifact(artifacts.filter((artifact) => artifact.buildId === selected.buildId));
+  return preferredDisplayPreviewArtifact(artifacts);
 }
 
 export function defaultPreviewArtifact(

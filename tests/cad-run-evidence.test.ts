@@ -71,6 +71,7 @@ test('bound hidden draft is delivered before the turn ends and survives a newer 
     const ready = await readCadRunArtifacts(root);
     assert.equal(ready.find((item) => item.format === 'step')?.purpose, 'draft-preview');
     assert.ok(ready.every((item) => item.inputsCurrent));
+    assert.ok(ready.every((item) => item.designId === 'source:build.py'));
     assert.equal(ready.some((item) => item.name === 'feature-cutter.stl'), false);
     active = false;
     await watcher.stop();
@@ -81,6 +82,7 @@ test('bound hidden draft is delivered before the turn ends and survives a newer 
     const previous = await readCadRunArtifacts(root);
     assert.equal(previous.length, 2);
     assert.ok(previous.every((item) => item.inputsCurrent === false));
+    assert.ok(previous.every((item) => item.designId === 'source:build.py'));
     await writeFile(join(folder, 'display.step'), 'tampered');
     const brokenDisplay = await readCadRunArtifacts(root);
     assert.equal(brokenDisplay.some((item) => item.purpose === 'draft-preview'), false);

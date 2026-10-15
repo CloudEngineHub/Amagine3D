@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import styles from './FilesPanel.module.css';
-import { fileSectionArtifacts } from '../../lib/artifact-selection';
+import { artifactDesigns } from '../../lib/artifact-groups';
 import type { ArtifactSummary } from '../../types';
-import { ArtifactIcon } from './ArtifactIcon';
+import { ArtifactFileList, DesignArtifactCard } from './DesignArtifactCard';
 import type { Language } from './types';
 import { translator } from './types';
 import { LoadingSpinner, RefreshIcon } from './WorkbenchPrimitives';
@@ -12,6 +12,9 @@ export interface FilesPanelProps {
   artifacts: ArtifactSummary[];
   language: Language;
   loading: boolean;
+  workspaceName: string;
+  followLatest: boolean;
+  onFollowLatest: () => void;
   onDownload: (artifacts: ArtifactSummary[]) => Promise<void>;
   onRefresh: () => void;
   onSelect: (artifact: ArtifactSummary) => void;
@@ -19,47 +22,22 @@ export interface FilesPanelProps {
   selectedPath: string | undefined;
 }
 
-export function FilesPanel({
-  artifacts,
-  language,
-  loading,
-  onDownload,
-  onRefresh,
-  onSelect,
-  selectionScope,
-  selectedPath,
-}: FilesPanelProps) {
+export function FilesPanel({ artifacts, language, loading, workspaceName, followLatest, onFollowLatest,
+  onDownload, onRefresh, onSelect, selectionScope, selectedPath }: FilesPanelProps) {
   const text = translator(language);
   const [downloadError, setDownloadError] = useState(false);
   const [downloading, setDownloading] = useState(false);
-  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(
-    () => new Set(),
-  );
-  const visibleArtifacts = useMemo(
-    () => fileSectionArtifacts(artifacts),
-    [artifacts],
-  );
-  const hasPrintableArtifacts = useMemo(
-    () =>
-      visibleArtifacts.some(
-        ({ format }) => format === '3mf' || format === 'stl',
-      ),
-    [visibleArtifacts],
-  );
-  const selectedArtifacts = useMemo(
-    () => visibleArtifacts.filter(({ path }) => selectedPaths.has(path)),
-    [selectedPaths, visibleArtifacts],
-  );
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(() => new Set());
+  const designs = useMemo(() => artifactDesigns(artifacts, workspaceName), [artifacts, workspaceName]);
+  const selectedArtifacts = useMemo(() => artifacts.filter(({ path }) => selectedPaths.has(path)), [selectedPaths, artifacts]);
 
   useEffect(() => {
-    const availablePaths = new Set(visibleArtifacts.map(({ path }) => path));
+    const availablePaths = new Set(artifacts.map(({ path }) => path));
     setSelectedPaths((current) => {
-      const next = new Set(
-        [...current].filter((path) => availablePaths.has(path)),
-      );
+      const next = new Set([...current].filter((path) => availablePaths.has(path)));
       return next.size === current.size ? current : next;
     });
-  }, [visibleArtifacts]);
+  }, [artifacts]);
 
   useEffect(() => {
     setSelectedPaths(new Set());
@@ -76,106 +54,55 @@ export function FilesPanel({
     setDownloadError(false);
   }
 
-  async function downloadSelection() {
-    if (selectedArtifacts.length === 0 || downloading) return;
+  async function download(files: ArtifactSummary[]) {
+    if (!files.length || downloading) return;
     setDownloading(true);
     setDownloadError(false);
-    try {
-      await onDownload(selectedArtifacts);
-    } catch {
-      setDownloadError(true);
-    } finally {
-      setDownloading(false);
-    }
+    try { await onDownload(files); }
+    catch { setDownloadError(true); }
+    finally { setDownloading(false); }
   }
 
+  const fileListProps = { language, selectedPath, selectedPaths, onSelect, onToggle: toggleSelected };
   return (
     <div className={styles.fileWorkspace} role="tabpanel">
       <section className={styles.fileSection}>
         <div className={styles.sectionHeading}>
-          {hasPrintableArtifacts ? (
-            <p className={styles.fileHint}>
-              {text(
-                '3MF and STL files can be downloaded for printing.',
-                '3MF 和 STL 文件可下载用于打印。',
-              )}
-            </p>
-          ) : null}
+          <p className={styles.fileHint}>{text(`${designs.length} designs`, `${designs.length} 个设计成果`)}</p>
           <div className={styles.fileHeadingActions}>
-            <span>{visibleArtifacts.length}</span>
-            <button
-              aria-label={text('Refresh files', '刷新文件')}
-              className={styles.fileRefreshButton}
-              disabled={loading}
-              onClick={onRefresh}
-              type="button"
-            >
+            <button aria-label={text('Refresh files', '刷新文件')} className={styles.fileRefreshButton}
+              disabled={loading} onClick={onRefresh} type="button">
               {loading ? <LoadingSpinner /> : <RefreshIcon />}
             </button>
           </div>
         </div>
-        {visibleArtifacts.length === 0 ? (
-          <p className={styles.fileEmpty}>
-            {text(
-              'Models and PNG previews appear after A3D saves them.',
-              'A3D 保存模型或 PNG 预览后会显示在这里。',
-            )}
-          </p>
+        {designs.length > 0 ? (
+          <div className={styles.followBar} aria-live="polite">
+            <span>{followLatest ? text('Following the latest preview', '正在跟随最新预览') : text('Keeping your selected version', '正在查看所选版本')}</span>
+            {!followLatest ? <button type="button" onClick={onFollowLatest}>{text('Follow latest', '跟随最新')}</button> : null}
+          </div>
+        ) : null}
+        {designs.length === 0 ? (
+          <p className={styles.fileEmpty}>{text('Your first draft will appear here as soon as it is ready.', '首个草稿生成后会立即显示在这里。')}</p>
         ) : (
-          <ul className={styles.fileTree}>
-            {visibleArtifacts.map((artifact) => (
-              <li key={artifact.path}>
-                <input
-                  aria-label={text(
-                    `Select ${artifact.name}`,
-                    `选择 ${artifact.name}`,
-                  )}
-                  checked={selectedPaths.has(artifact.path)}
-                  className={styles.fileTreeCheckbox}
-                  onChange={() => toggleSelected(artifact.path)}
-                  type="checkbox"
-                />
-                <button
-                  aria-current={selectedPath === artifact.path}
-                  onClick={() => onSelect(artifact)}
-                  title={artifact.path}
-                  type="button"
-                >
-                  <ArtifactIcon
-                    artifact={artifact}
-                    selected={selectedPath === artifact.path}
-                  />
-                  <span>{artifact.plateId
-                    ? text(`${artifact.modelId ?? ''} · Plate ${Number(artifact.plateId)} · ${artifact.format?.toUpperCase()}`,
-                      `${artifact.modelId ?? ''} · 第 ${Number(artifact.plateId)} 盘 · ${artifact.format?.toUpperCase()}`)
-                    : artifact.name}{artifact.legacy && artifact.kind === 'other' ? text(' · historical attachment; STEP required for preview', ' · 历史附件，预览需 STEP') : artifact.inputsCurrent === false ? text(' · previous revision', ' · 上一版')
-                      : artifact.status === 'draft' ? text(' · draft', ' · 草稿')
-                      : artifact.status === 'failed' ? text(' · unresolved checks', ' · 未通过项') : ''}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
+          <div className={styles.designList}>
+            {designs.map((design) => <DesignArtifactCard key={design.id} design={design} {...fileListProps}
+              downloading={downloading} onDownload={(files) => void download(files)} />)}
+          </div>
         )}
+        {artifacts.length > 0 ? (
+          <details className={styles.allFiles}>
+            <summary>{text('All files', '全部文件')} <span>{artifacts.length}</span></summary>
+            <p className={styles.fileHint}>{text('Includes source, reports and intermediate files.', '包含源文件、检查报告和中间产物。')}</p>
+            <ArtifactFileList artifacts={artifacts} {...fileListProps} />
+          </details>
+        ) : null}
       </section>
       <footer className={styles.fileActions}>
-        <span aria-live="polite">
-          {downloadError
-            ? text('Download failed. Please try again.', '下载失败，请重试。')
-            : text(
-                `${String(selectedArtifacts.length)} files selected`,
-                `已选择 ${String(selectedArtifacts.length)} 个文件`,
-              )}
-        </span>
-        <button
-          disabled={selectedArtifacts.length === 0 || downloading}
-          onClick={() => void downloadSelection()}
-          type="button"
-        >
-          {downloading
-            ? text('Preparing…', '正在准备…')
-            : selectedArtifacts.length > 1
-              ? text('Download ZIP', '下载 ZIP')
-              : text('Download', '下载')}
+        <span aria-live="polite">{downloadError ? text('Download failed. Please try again.', '下载失败，请重试。')
+          : text(`${selectedArtifacts.length} files selected`, `已选择 ${selectedArtifacts.length} 个文件`)}</span>
+        <button disabled={selectedArtifacts.length === 0 || downloading} onClick={() => void download(selectedArtifacts)} type="button">
+          {downloading ? text('Preparing…', '正在准备…') : selectedArtifacts.length > 1 ? text('Download ZIP', '下载 ZIP') : text('Download', '下载')}
         </button>
       </footer>
     </div>

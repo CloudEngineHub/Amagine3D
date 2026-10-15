@@ -134,6 +134,9 @@ export type ArtifactPurpose = 'display-preview' | 'draft-preview' | 'diagnostic-
   'print-package' | 'cad-model' | 'internal-evidence' | 'unclassified';
 
 export interface ArtifactSummary {
+  /** Stable design/source identity shared by its drafts and subsequent builds. */
+  designId?: string;
+  partId?: string;
   legacy?: boolean;
   manufacturingStatus?: string;
   previewImagePath?: string;

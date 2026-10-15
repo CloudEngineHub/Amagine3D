@@ -312,17 +312,35 @@ export async function userSessionArtifacts(
   );
   const legacyPaths = new Set(builds.filter((build) => build.legacy).flatMap((build) => build.artifactPaths));
   const displayMetadata = new Map(builds.flatMap((build) =>
-    build.topLevelArtifactPaths.map((path) => {
+    build.artifactPaths.map((path) => {
       const plate = build.printPlates?.find((item) => item.stlPath === path || item.threeMfPath === path);
+      const part = build.partArtifacts?.find((item) => item.path === path);
       return [path, { modelId: build.modelId, buildId: build.runId, ...(build.legacy ? { legacy: true, readOnly: true } : {}),
-        ...(plate ? { plateId: plate.id } : {}) }] as const;
+        ...(part ? { partId: part.partId } : {}), ...(plate ? { plateId: plate.id } : {}) }] as const;
     }),
   ));
   const combined = new Map(scannedArtifacts.map((artifact) => [artifact.path, artifact]));
   for (const artifact of stagedArtifacts) combined.set(artifact.path, artifact);
+  const designIds = new Map<string, string>();
+  const knownDesigns = new Map<string, Set<string>>();
+  for (const build of builds) {
+    const identities = build.artifactPaths.flatMap((path) => combined.get(path)?.designId ? [combined.get(path)!.designId!] : []);
+    const sourceIdentity = build.sourcePath && stagedArtifacts.find((artifact) => artifact.designId === `source:${build.sourcePath}`)?.designId;
+    if (sourceIdentity) identities.push(sourceIdentity);
+    const known = knownDesigns.get(build.modelId) ?? new Set<string>();
+    identities.forEach((identity) => known.add(identity));
+    knownDesigns.set(build.modelId, known);
+  }
+  for (const build of builds) {
+    const stagedDesign = build.artifactPaths.map((path) => combined.get(path)?.designId).find(Boolean);
+    const known = knownDesigns.get(build.modelId)!;
+    const designId = stagedDesign ?? (known.size === 1 ? [...known][0] : `model:${build.modelId}`);
+    for (const path of build.artifactPaths) designIds.set(path, designId);
+  }
   const artifacts = [...combined.values()].map((artifact) => ({
     ...artifact,
     ...displayMetadata.get(artifact.path),
+    ...(artifact.designId || designIds.has(artifact.path) ? { designId: artifact.designId ?? designIds.get(artifact.path) } : {}),
     ...(featuredPaths.has(artifact.path) ? { featured: true } : {}),
     ...(primaryPaths.has(artifact.path) ? { primary: artifact.purpose !== 'internal-evidence' || artifact.status === undefined,
       manufacturingStatus: artifact.manufacturingStatus ?? (legacyPaths.has(artifact.path) ? undefined : 'pending'),

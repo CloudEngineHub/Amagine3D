@@ -21,6 +21,7 @@ export interface ModelBuild {
   primaryPreviewPath: string;
   reportPath: string;
   sourcePath?: string;
+  partArtifacts?: { partId: string; path: string }[];
   topLevelArtifactPaths: string[];
   runId?: string;
   printPlates?: { id: string; stlPath: string; threeMfPath: string }[];
@@ -196,6 +197,13 @@ export async function discoverModelBuilds(
       primaryPreviewPath,
       reportPath: artifact.path,
       ...(sourcePath ? { sourcePath } : {}),
+      partArtifacts: Object.keys(report.artifactMatrix?.parts ?? {}).flatMap((partId) =>
+        ['step', 'stl', '3mf'].flatMap((format) => {
+          const path = validated.artifactPaths[`${format}:${partId}`];
+          const local = path ? safeRelativePath(canonicalRoot, path) : undefined;
+          return local && !topLevelArtifactPaths.includes(local) ? [{ partId, path: local }] : [];
+        }),
+      ),
       topLevelArtifactPaths: [...new Set(topLevelArtifactPaths)],
       ...(typeof report.runId === 'string' ? { runId: report.runId } : {}),
       ...(printPlates.length ? { printPlates } : {}),

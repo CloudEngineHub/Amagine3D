@@ -145,7 +145,12 @@ export async function readCadRunArtifacts(workspace: string): Promise<ArtifactSu
         const doc = JSON.parse(bytes.toString('utf8'));
         if (!['a3d-draft-result/v2', 'evidence-cad-compile-result/v2', 'a3d-draft-result/v1', 'evidence-cad-compile-result/v1'].includes(doc.schema) ||
           typeof doc.runId !== 'string' || !doc.runId) continue;
-        const inputs = run.inputs ?? doc.taskInputBindings ?? doc.inputBindings ?? {};
+        const inputs = run.inputs ?? doc.taskInputBindings ?? doc.inputBindings ?? (doc.source ? { source: doc.source } : {});
+        const designInput = inputs.design ?? inputs.source;
+        const designPath = typeof designInput?.path === 'string'
+          ? relative(root, await realpath(resolve(root, designInput.path)).catch(() => resolve(root, designInput.path))) : undefined;
+        const designId = designPath && !isAbsolute(designPath) && designPath !== '..' && !designPath.startsWith(`..${sep}`)
+          ? `${inputs.design ? 'design' : 'source'}:${designPath.split(sep).join('/')}` : undefined;
         const freshness = await Promise.allSettled(Object.values(inputs).map((ref) => bound(ref as { path: string; sha256: string })));
         const current = freshness.length > 0 && freshness.every((item) => item.status === 'fulfilled') &&
           matchesActive(root, active, inputs);
@@ -170,14 +175,19 @@ export async function readCadRunArtifacts(workspace: string): Promise<ArtifactSu
                 name: 'draft.' + extension, path: local, url: `/api/artifacts/file?path=${encodeURIComponent(local)}`,
                 size: info.size, modifiedAt: info.mtime.toISOString(), sha256: createHash('sha256').update(bytes).digest('hex'),
                 primary: extension === 'step', purpose: extension === 'step' ? 'cad-model' : 'unclassified',
-                status: 'diagnostic', inputsCurrent: false, buildId: doc.runId, manufacturingStatus: 'unknown' });
+                status: 'diagnostic', inputsCurrent: false, buildId: doc.runId, manufacturingStatus: 'unknown',
+                ...(designId ? { designId } : {}) });
             } catch { /* Missing legacy STEP/attachment stays unavailable. */ }
           }
         }
         let declared = doc.artifacts ?? {};
+        let modelId: string | undefined;
         if (doc.artifacts?.buildReport) {
           const report = JSON.parse((await bound(doc.artifacts.buildReport, 2 * 1024 * 1024)).bytes.toString('utf8'));
-          if (['evidence-a3d-build/v2', 'evidence-a3d-build/v1'].includes(report.schema)) declared = { ...report.artifacts, ...declared };
+          if (['evidence-a3d-build/v2', 'evidence-a3d-build/v1'].includes(report.schema)) {
+            declared = { ...report.artifacts, ...declared };
+            if (typeof report.part === 'string' && report.part.trim()) modelId = report.part;
+          }
         }
         if (doc.geometry) {
           const manifest = JSON.parse((await bound(doc.geometry, 2 * 1024 * 1024)).bytes.toString('utf8'));
@@ -226,6 +236,9 @@ export async function readCadRunArtifacts(workspace: string): Promise<ArtifactSu
           artifacts.set(local, { kind: legacyAttachment ? 'other' : image ? 'image' : 'model', name: local.split('/').at(-1)!, path: local,
             url: `/api/artifacts/file?path=${encodeURIComponent(local)}`, size: meta.size,
             modifiedAt: meta.mtime.toISOString(), primary: display || (step ? key === cadMasterKey : image ? ['preview', 'diagnosticPreview'].includes(key) : status === 'validated' && current), buildId: doc.runId,
+            ...(designId ? { designId } : {}), ...(modelId ? { modelId } : {}),
+            ...(step && !display && key !== cadMasterKey ? { partId: key.slice('step:'.length) } : {}),
+            ...(platePrint ? { plateId: key.split(':')[1] } : {}),
             ...(doc.artifactStages?.manufacturing?.status ? { manufacturingStatus: doc.artifactStages.manufacturing.status } : {}),
             ...(doc.schema.endsWith('/v1') ? { legacy: true, readOnly: true } : {}),
             ...(revision ? { revision } : {}), inputsCurrent: current, status, sha256: ref.sha256,

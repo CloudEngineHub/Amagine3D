@@ -20,6 +20,7 @@ import {
 } from '../server/sessions.ts';
 import { writeUnifiedBuildFixture } from './unified-build-fixture.ts';
 import { fileSectionArtifacts, printableArtifact } from '../src/lib/artifact-selection.ts';
+import { artifactDesigns } from '../src/lib/artifact-groups.ts';
 import {
   completeChatTurn,
   emptyChatTurn,
@@ -88,6 +89,11 @@ test('shows CAD master, display and plate files from the current validated repor
     assert.deepEqual(visible.map(({ plateId }) => plateId), [undefined, undefined, '01', '01', '02', '02']);
     assert.ok(visible.every(({ buildId, modelId }) => buildId && modelId === 'pair'));
     assert.ok(collection!.artifacts.some(({ path, primary }) => path === 'pair-left.stl' && !primary));
+    const designs = artifactDesigns(collection!.artifacts);
+    assert.equal(designs.length, 1);
+    assert.deepEqual(designs[0]?.latest.parts.map((part) => part.id), ['left', 'right']);
+    assert.ok(designs[0]?.latest.parts.every((part) => part.artifacts.length === 2));
+    assert.equal(designs[0]?.latest.plates.length, 2);
     const download = await createArtifactArchive(workspace, visible.map(({ path }) => path));
     assert.ok(download);
     assert.deepEqual(Object.keys(unzipSync(download)).sort(), visible.map(({ path }) => path).sort());

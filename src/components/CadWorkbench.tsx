@@ -47,8 +47,8 @@ import {
 } from '../lib/agent-api';
 import {
   defaultPreviewArtifact,
+  displayPreviewForSelection,
   fileSectionArtifacts,
-  preferredDisplayPreviewArtifact,
   printPreviewForSelection,
 } from '../lib/artifact-selection';
 import {
@@ -57,7 +57,7 @@ import {
   startChatStep,
 } from '../lib/chat-turn';
 import { createSessionScope } from '../lib/session-scope';
-import { acceptArtifactUpdate, type ArtifactUpdateCursor } from '../lib/artifact-updates';
+import { acceptArtifactUpdate, latestArtifactPreview, type ArtifactUpdateCursor } from '../lib/artifact-updates';
 import { useDismissibleLayer } from '../hooks/useDismissibleLayer';
 import {
   ACCEPTED_IMAGE_TYPES,
@@ -114,6 +114,8 @@ export function CadWorkbench({
     const [printPreview, setPrintPreview] = useState(false);
     const [running, setRunning] = useState(false);
     const [selectedPath, setSelectedPath] = useState<string>();
+    const [followLatest, setFollowLatest] = useState(true);
+    const followLatestRef = useRef(true);
     const [selectedText, setSelectedText] = useState<string>();
     const [sessionId, setSessionId] = useState(BUNDLED_POMODORO_SESSION_ID);
     const [sessionLoading, setSessionLoading] = useState(true);
@@ -124,7 +126,6 @@ export function CadWorkbench({
     const sessionScopeRef = useRef(createSessionScope(BUNDLED_POMODORO_SESSION_ID));
     const turnScopeRef = useRef(createSessionScope(''));
     const abortRef = useRef<AbortController | undefined>(undefined);
-    const artifactSnapshotRef = useRef<ArtifactSummary[]>([]);
     const conversationRef = useRef<HTMLElement>(null);
     const parameterBuildingRef = useRef(false);
     const sessionMenuRef = useDismissibleLayer<HTMLDivElement>({
@@ -145,6 +146,7 @@ export function CadWorkbench({
       () => artifacts.find((artifact) => artifact.path === selectedPath),
       [artifacts, selectedPath],
     );
+    const latestPreview = useMemo(() => latestArtifactPreview(artifacts), [artifacts]);
     const artifactUpdateCursor = useRef<{ draftId: string; cursor: ArtifactUpdateCursor }>({ draftId: '', cursor: { sequence: 0 } });
     const activeSession = useMemo(
       () => sessions.find((session) => session.id === sessionId),
@@ -174,15 +176,7 @@ export function CadWorkbench({
       [parameterModels, selectedArtifact],
     );
     const displayPreviewArtifact = useMemo(
-      () =>
-        (activeParameterModel
-          ? artifacts.find(
-              ({ path }) => path === activeParameterModel.displayPreviewPath,
-            )
-          : selectedArtifact?.kind === 'model' &&
-              selectedArtifact.format === 'step'
-            ? selectedArtifact
-            : undefined) ?? preferredDisplayPreviewArtifact(artifacts),
+      () => displayPreviewForSelection(artifacts, selectedArtifact, activeParameterModel),
       [activeParameterModel, artifacts, selectedArtifact],
     );
     const printPreviewArtifact = useMemo(
@@ -200,6 +194,8 @@ export function CadWorkbench({
     function activateSession(nextSessionId: string) {
       sessionScopeRef.current.activate(nextSessionId);
       setSessionId(nextSessionId);
+      followLatestRef.current = true;
+      setFollowLatest(true);
     }
 
     function updateDraftTurn(
@@ -219,6 +215,8 @@ export function CadWorkbench({
     }
 
     function selectArtifact(artifact: ArtifactSummary) {
+      followLatestRef.current = false;
+      setFollowLatest(false);
       setSelectedPath(artifact.path);
       if (artifact.kind === 'model' || artifact.kind === 'image') {
         setLeftView('files');
@@ -226,6 +224,14 @@ export function CadWorkbench({
       if (artifact.kind === 'model') {
         setPrintPreview(artifact.format === '3mf' || artifact.format === 'stl');
       }
+    }
+
+    function followLatestPreview() {
+      followLatestRef.current = true;
+      setFollowLatest(true);
+      const latest = latestArtifactPreview(artifacts);
+      if (latest) setSelectedPath(latest.path);
+      setPrintPreview(false);
     }
 
     function triggerDownload(url: string, name: string) {
@@ -330,7 +336,7 @@ export function CadWorkbench({
     function selectInitialArtifact(nextArtifacts: ArtifactSummary[]) {
       setPrintPreview(false);
       setSelectedPath(
-        defaultPreviewArtifact(nextArtifacts)?.path ??
+        latestArtifactPreview(nextArtifacts)?.path ?? defaultPreviewArtifact(nextArtifacts)?.path ??
           fileSectionArtifacts(nextArtifacts)[0]?.path ??
           undefined,
       );
@@ -379,10 +385,12 @@ export function CadWorkbench({
           preferredArtifactPath &&
             detail.artifacts.some(({ path }) => path === preferredArtifactPath)
             ? preferredArtifactPath
-            : defaultPreviewArtifact(detail.artifacts)?.path ??
+            : latestArtifactPreview(detail.artifacts)?.path ?? defaultPreviewArtifact(detail.artifacts)?.path ??
                 fileSectionArtifacts(detail.artifacts)[0]?.path ??
                 undefined;
         setSelectedPath(initialArtifact);
+        followLatestRef.current = !preferredArtifactPath;
+        setFollowLatest(!preferredArtifactPath);
         const selected = detail.artifacts.find(
           ({ path }) => path === initialArtifact,
         );
@@ -409,7 +417,9 @@ export function CadWorkbench({
         setArtifacts(next.artifacts);
         setArtifactWorkspace(next.artifactWorkspace);
         setParameterModels(parameterCollection.models);
+        if (followLatestRef.current) setPrintPreview(false);
         setSelectedPath((current) => {
+          if (followLatestRef.current) return latestArtifactPreview(next.artifacts)?.path;
           if (
             current &&
             next.artifacts.some(({ path }) => path === current)
@@ -417,7 +427,7 @@ export function CadWorkbench({
             return current;
           }
           return (
-            defaultPreviewArtifact(next.artifacts)?.path ??
+            latestArtifactPreview(next.artifacts)?.path ?? defaultPreviewArtifact(next.artifacts)?.path ??
             fileSectionArtifacts(next.artifacts)[0]?.path ??
             undefined
           );
@@ -642,22 +652,13 @@ export function CadWorkbench({
         if (event.artifactWorkspace) {
           setArtifactWorkspace(event.artifactWorkspace);
         }
-        const previous = new Map(
-          artifactSnapshotRef.current.map((artifact) => [
-            artifact.path,
-            `${artifact.modifiedAt}:${String(artifact.size)}`,
-          ]),
-        );
-        const changedArtifacts = event.artifacts.filter(
-          (artifact) =>
-            previous.get(artifact.path) !==
-            `${artifact.modifiedAt}:${String(artifact.size)}`,
-        );
-        const currentPreview =
-          defaultPreviewArtifact(changedArtifacts) ??
-          defaultPreviewArtifact(event.artifacts);
-        setPrintPreview(false);
-        if (currentPreview) setSelectedPath(currentPreview.path);
+        const currentPreview = latestArtifactPreview(event.artifacts);
+        if (followLatestRef.current) {
+          setPrintPreview(false);
+          if (currentPreview) setSelectedPath(currentPreview.path);
+        } else {
+          setSelectedPath((current) => event.artifacts.some((artifact) => artifact.path === current) ? current : currentPreview?.path);
+        }
         void fetchModelParameters(event.sessionId)
           .then((collection) => {
             if (isCurrentSession()) setParameterModels(collection.models);
@@ -772,8 +773,6 @@ export function CadWorkbench({
       const isCurrentRequest = () => isCurrentSession() && isCurrentTurn();
       abortRef.current = controller;
       artifactUpdateCursor.current = { draftId, cursor: { sequence: 0 } };
-      artifactSnapshotRef.current =
-        requestSessionId === sessionId ? artifacts : [];
       setMessages((current) => [
         ...current,
         userMessage,
@@ -936,6 +935,9 @@ export function CadWorkbench({
               artifacts,
               language,
               loading: storageLoading,
+              workspaceName: artifactWorkspaceName,
+              followLatest,
+              onFollowLatest: followLatestPreview,
               onDownload: downloadArtifacts,
               onRefresh: () => void refreshArtifacts(),
               onSelect: selectArtifact,
@@ -961,9 +963,12 @@ export function CadWorkbench({
           </div>
 
           <PreviewPanel
-            cadArtifact={cadArtifact}
+            cadArtifact={selectedArtifact?.buildId && cadArtifact?.buildId !== selectedArtifact.buildId ? undefined : cadArtifact}
             connectionStatus={connectionStatus}
             language={language}
+            availablePreview={!followLatest && latestPreview?.path !== selectedPath &&
+              (!latestPreview?.buildId || latestPreview.buildId !== selectedArtifact?.buildId) ? latestPreview : undefined}
+            onShowLatest={followLatestPreview}
             onTogglePrintPreview={() => setPrintPreview((enabled) => !enabled)}
             previewArtifact={previewArtifact}
             printPreview={showingPrintPreview}

@@ -13,7 +13,7 @@ const RIGHT_PANEL_MAX = 480;
 
 export function useWorkbenchLayout() {
   const [leftCollapsed, setLeftCollapsed] = useState(false);
-  const [leftWidth, setLeftWidth] = useState(340);
+  const [leftWidth, setLeftWidth] = useState(380);
   const [rightCollapsed, setRightCollapsed] = useState(true);
   const [rightWidth, setRightWidth] = useState(320);
 
