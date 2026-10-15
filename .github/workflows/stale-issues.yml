@@ -1,0 +1,54 @@
+name: Stale issues
+
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Preview only; live runs also require STALE_ISSUES_ENABLED=true
+        type: boolean
+        default: true
+
+permissions:
+  issues: write
+
+concurrency:
+  group: stale-issues
+  cancel-in-progress: false
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11.0.0
+        with:
+          # Trial mode is the default, including scheduled runs.
+          debug-only: ${{ vars.STALE_ISSUES_ENABLED != 'true' || (github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+          only-issue-labels: 'status: discussion,needs-info'
+          exempt-issue-labels: 'status: needs-triage,status: planned,status: in-progress,no-stale'
+          exempt-all-issue-assignees: true
+          exempt-all-issue-milestones: true
+          days-before-issue-stale: 30
+          days-before-issue-close: 14
+          stale-issue-label: stale
+          remove-issue-stale-when-updated: true
+          close-issue-reason: not_planned
+          stale-issue-message: |
+            A maintainer requested more information, and this issue has had no activity for 30 days.
+            Please provide the requested details or let us know if you need more time.
+            If there is no further activity for 14 days, this issue will be closed for now.
+
+            维护者此前请求补充信息，此议题已连续 30 天没有更新。
+            请补充所需信息，或告知我们你需要更多时间；若再过 14 天仍无更新，将暂时关闭此议题。
+          close-issue-message: |
+            Closing for now because there has been no further activity for 14 days after the reminder.
+            This does not mean the problem has been fixed. You can still comment with the requested
+            information and ask a maintainer to reopen the issue.
+
+            提醒发出后 14 天内仍未收到进一步更新，因此暂时关闭。关闭不代表问题已经修复。
+            你仍可在此补充所需信息，并请维护者重新打开议题。
+          days-before-pr-stale: -1
+          days-before-pr-close: -1
+          operations-per-run: 100

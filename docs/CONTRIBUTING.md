@@ -6,6 +6,49 @@ For changes that need design discussion, open an issue using the
 [RFC template](../doc/RFC_TEMPLATE.md) (in Chinese). Use `RFC: Proposal title` as
 the issue title, copy the template sections into the body, and replace the placeholders.
 
+## Issue status and follow-up
+
+Each open issue has one status label, separate from type labels such as `bug`,
+`enhancement`, and `documentation`:
+
+| Label | Meaning |
+| --- | --- |
+| `status: needs-triage` | A maintainer has not yet classified the issue. |
+| `status: discussion` | The problem or proposed approach is being discussed. |
+| `status: planned` | The work has been accepted and planned, but has not started. |
+| `status: in-progress` | Implementation or a fix is in progress. |
+
+The **Issue status** workflow assigns `status: needs-triage` to new or reopened
+issues that have no status. When a maintainer applies another status, it replaces
+the previous one. Removing the last status returns the issue to triage. Running
+this workflow manually creates missing labels and applies the same rules to all
+open issues; it does not infer a development commitment from the issue text.
+
+`status: discussion` alone never makes an issue eligible for automatic closure.
+After explicitly requesting information from the reporter, a maintainer can add
+`needs-info` alongside it. Remove `needs-info` when enough information is available.
+Moving out of discussion automatically removes `needs-info` and `stale`.
+
+The daily **Stale issues** workflow only considers issues with **both**
+`status: discussion` and `needs-info`. It reminds participants after 30 days of
+inactivity, then closes the issue after another 14 days without activity. A comment
+or update resets the inactivity timer; the next scan removes an existing stale
+label when activity resumes before closure. Issues with `no-stale`, an assignee,
+a milestone, or a protected status (triage, planned, or in progress) are exempt.
+PRs are excluded. An inactivity closure is recorded as `not_planned`, not as a
+completed fix; reporters can comment with more information and ask a maintainer
+to reopen the issue.
+
+**The initial rollout is a dry run.** Unless the repository Actions variable
+`STALE_ISSUES_ENABLED` is exactly `true`, stale scans only write logs and do not
+change issue labels, post comments, or close issues. To enable daily live scans,
+set that variable in **Settings → Secrets and variables → Actions → Variables**.
+Manual runs default to `dry_run: true`; a live manual run requires both the variable
+and `dry_run: false`. Remove the variable or set it to `false` to return to preview
+mode. Status labeling remains active independently of this switch.
+
+## Development
+
 For an introduction to the CAD pipeline, read the
 [evidence-gated workflow overview](./cad-workflow.md). It explains who chooses
 repairs, what the runtime verifies, and how to interpret repair progress.

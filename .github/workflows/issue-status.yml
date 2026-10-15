@@ -1,0 +1,99 @@
+name: Issue status
+
+on:
+  issues:
+    types: [opened, reopened, labeled, unlabeled]
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+concurrency:
+  group: issue-status-${{ github.event.issue.number || 'all' }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const repo = context.repo;
+            const definitions = [
+              ['status: needs-triage', 'ededed', '待维护者分类 / Awaiting maintainer triage'],
+              ['status: discussion', 'd4c5f9', '等待讨论 / Discussing the problem or proposed approach'],
+              ['status: planned', '0052cc', '已列入计划 / Accepted and planned, not yet in progress'],
+              ['status: in-progress', '1d76db', '正在修改 / Implementation or fix in progress'],
+              ['needs-info', 'fbca04', '等待提问者补充信息 / Awaiting information requested by a maintainer'],
+              ['no-stale', '0e8a16', '保留此议题 / Exempt from automatic stale handling'],
+              ['stale', 'eeeeee', '补充信息提醒已发出 / Inactivity reminder sent; awaiting follow-up'],
+            ];
+            const statuses = definitions.slice(0, 4).map(([name]) => name);
+            const existing = await github.paginate(github.rest.issues.listLabelsForRepo, {
+              ...repo, per_page: 100,
+            });
+            for (const [name, color, description] of definitions) {
+              if (existing.some(label => label.name === name)) continue;
+              try {
+                await github.rest.issues.createLabel({ ...repo, name, color, description });
+              } catch (error) {
+                // Another issue's run may have created the same label concurrently.
+                if (error.status !== 422 || !error.response?.data?.errors?.some(
+                  detail => detail.code === 'already_exists'
+                )) throw error;
+              }
+            }
+
+            async function syncIssue(issue_number) {
+              // Read current labels rather than an older webhook snapshot.
+              const { data: issue } = await github.rest.issues.get({ ...repo, issue_number });
+              if (issue.pull_request || issue.state !== 'open') return;
+              const names = new Set(issue.labels.map(label => label.name));
+              const active = statuses.filter(name => names.has(name));
+              let selected = active[0] || 'status: needs-triage';
+              if (active.length > 1) {
+                // The newest applied status wins, even if webhook runs arrive out of order.
+                const events = await github.paginate(github.rest.issues.listEvents, {
+                  ...repo, issue_number, per_page: 100,
+                });
+                const latest = events.filter(event =>
+                  event.event === 'labeled' && active.includes(event.label?.name)
+                ).sort((a, b) => b.id - a.id)[0];
+                if (!latest) {
+                  core.warning(`Cannot resolve multiple statuses on #${issue_number}; leaving labels unchanged.`);
+                  return;
+                }
+                selected = latest.label.name;
+              }
+              if (!names.has(selected)) {
+                await github.rest.issues.addLabels({ ...repo, issue_number, labels: [selected] });
+              }
+              const remove = new Set(active.filter(name => name !== selected));
+              if (selected !== 'status: discussion') remove.add('needs-info');
+              if (selected !== 'status: discussion' || !names.has('needs-info') ||
+                  names.has('no-stale') || issue.milestone || issue.assignees.length > 0) {
+                remove.add('stale');
+              }
+              for (const name of remove) {
+                if (!names.has(name)) continue;
+                try {
+                  await github.rest.issues.removeLabel({ ...repo, issue_number, name });
+                } catch (error) {
+                  if (error.status !== 404) throw error;
+                }
+              }
+              core.info(`#${issue_number}: ${selected}`);
+            }
+
+            if (context.eventName === 'workflow_dispatch') {
+              const issues = await github.paginate(github.rest.issues.listForRepo, {
+                ...repo, state: 'open', per_page: 100,
+              });
+              for (const issue of issues) {
+                if (!issue.pull_request) await syncIssue(issue.number);
+              }
+            } else {
+              await syncIssue(context.issue.number);
+            }
