@@ -4,7 +4,6 @@ import {
   Box3,
   Color,
   DirectionalLight,
-  GridHelper,
   Group,
   Mesh,
   MeshStandardMaterial,
@@ -25,6 +24,7 @@ import styles from './CadViewer.module.css';
 import { parseStepPreview, stepPreviewUrl } from '../lib/step-preview';
 import { formatBytes } from '../lib/format';
 import { referenceVisibility, type ReferenceComponentInfo } from '../lib/reference-visibility';
+import { createViewerGrid } from '../lib/viewer-grid';
 import type { ArtifactSummary } from '../types';
 
 type ViewName = 'front' | 'isometric' | 'top';
@@ -248,9 +248,8 @@ export function CadViewer({
       computedStyles.getPropertyValue('--color-canvas-grid').trim() || '#e8e8e8';
     const centerColor =
       computedStyles.getPropertyValue('--color-rule-strong').trim() || '#a1a1a1';
-    const grid = new GridHelper(320, 32, centerColor, gridColor);
-    grid.rotation.x = Math.PI / 2;
-    scene.add(grid);
+    const grid = createViewerGrid(gridColor, centerColor);
+    scene.add(grid.mesh);
 
     const ambient = new AmbientLight(0xffffff, 1.7);
     const key = new DirectionalLight(0xffffff, 2.8);
@@ -260,13 +259,21 @@ export function CadViewer({
     scene.add(ambient, key, fill);
 
     function draw(): void {
-      if (!disposed) renderer.render(scene, camera);
+      if (disposed) return;
+      const viewDistance = Math.max(camera.position.distanceTo(controls.target), Math.abs(camera.position.z), 1);
+      const far = viewDistance * 20;
+      if (camera.far !== far) {
+        camera.far = far;
+        camera.updateProjectionMatrix();
+      }
+      grid.update(camera, viewDistance, viewerHost.clientHeight);
+      renderer.render(scene, camera);
     }
 
     function animate(): void {
       if (disposed) return;
       controls.update();
-      renderer.render(scene, camera);
+      draw();
       frame = requestAnimationFrame(animate);
     }
 
@@ -361,9 +368,7 @@ export function CadViewer({
       controls.removeEventListener('change', draw);
       controls.dispose();
       if (model) disposeTree(model);
-      grid.geometry.dispose();
-      const gridMaterials = Array.isArray(grid.material) ? grid.material : [grid.material];
-      gridMaterials.forEach(disposeMaterial);
+      grid.dispose();
       // dispose() releases resources, but does not erase the last rendered frame.
       renderer.clear();
       renderer.dispose();
