@@ -27,7 +27,7 @@ jobs:
           # Trial mode is the default, including scheduled runs.
           debug-only: ${{ vars.STALE_ISSUES_ENABLED != 'true' || (github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
           only-issue-labels: 'status: discussion,needs-info'
-          exempt-issue-labels: 'status: needs-triage,status: planned,status: in-progress,no-stale'
+          exempt-issue-labels: 'status: planned,status: in-progress,no-stale'
           exempt-all-issue-assignees: true
           exempt-all-issue-milestones: true
           days-before-issue-stale: 30

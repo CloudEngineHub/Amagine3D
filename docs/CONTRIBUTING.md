@@ -8,21 +8,22 @@ the issue title, copy the template sections into the body, and replace the place
 
 ## Issue status and follow-up
 
-Each open issue has one status label, separate from type labels such as `bug`,
-`enhancement`, and `documentation`:
+Each open issue has at most one status label. **No status label means the issue
+awaits maintainer triage**, even if it already has type labels such as `bug`,
+`enhancement`, or `documentation`.
 
 | Label | Meaning |
 | --- | --- |
-| `status: needs-triage` | A maintainer has not yet classified the issue. |
 | `status: discussion` | The problem or proposed approach is being discussed. |
 | `status: planned` | The work has been accepted and planned, but has not started. |
 | `status: in-progress` | Implementation or a fix is in progress. |
 
-The **Issue status** workflow assigns `status: needs-triage` to new or reopened
-issues that have no status. When a maintainer applies another status, it replaces
-the previous one. Removing the last status returns the issue to triage. Running
-this workflow manually creates missing labels and applies the same rules to all
-open issues; it does not infer a development commitment from the issue text.
+The **Issue status** workflow does not add a default status to new or reopened
+issues. When a maintainer applies another status, it replaces the previous one.
+Removing the last status returns the issue to triage without adding a label.
+Running this workflow manually, or merging a change to it into `main`, creates
+missing labels and applies the same rules to all open issues; it does not infer
+a development commitment from the issue text.
 
 `status: discussion` alone never makes an issue eligible for automatic closure.
 After explicitly requesting information from the reporter, a maintainer can add
@@ -34,10 +35,10 @@ The daily **Stale issues** workflow only considers issues with **both**
 inactivity, then closes the issue after another 14 days without activity. A comment
 or update resets the inactivity timer; the next scan removes an existing stale
 label when activity resumes before closure. Issues with `no-stale`, an assignee,
-a milestone, or a protected status (triage, planned, or in progress) are exempt.
-PRs are excluded. An inactivity closure is recorded as `not_planned`, not as a
-completed fix; reporters can comment with more information and ask a maintainer
-to reopen the issue.
+a milestone, or a protected status (planned or in progress) are exempt. Issues
+without a status are ineligible, and PRs are excluded.
+An inactivity closure is recorded as `not_planned`, not as a completed fix;
+reporters can comment with more information and ask a maintainer to reopen the issue.
 
 **The initial rollout is a dry run.** Unless the repository Actions variable
 `STALE_ISSUES_ENABLED` is exactly `true`, stale scans only write logs and do not

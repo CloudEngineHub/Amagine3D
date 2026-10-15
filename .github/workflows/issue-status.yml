@@ -1,6 +1,9 @@
 name: Issue status
 
 on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/issue-status.yml']
   issues:
     types: [opened, reopened, labeled, unlabeled]
   workflow_dispatch:
@@ -22,7 +25,6 @@ jobs:
           script: |
             const repo = context.repo;
             const definitions = [
-              ['status: needs-triage', 'ededed', '待维护者分类 / Awaiting maintainer triage'],
               ['status: discussion', 'd4c5f9', '等待讨论 / Discussing the problem or proposed approach'],
               ['status: planned', '0052cc', '已列入计划 / Accepted and planned, not yet in progress'],
               ['status: in-progress', '1d76db', '正在修改 / Implementation or fix in progress'],
@@ -30,7 +32,7 @@ jobs:
               ['no-stale', '0e8a16', '保留此议题 / Exempt from automatic stale handling'],
               ['stale', 'eeeeee', '补充信息提醒已发出 / Inactivity reminder sent; awaiting follow-up'],
             ];
-            const statuses = definitions.slice(0, 4).map(([name]) => name);
+            const statuses = definitions.slice(0, 3).map(([name]) => name);
             const existing = await github.paginate(github.rest.issues.listLabelsForRepo, {
               ...repo, per_page: 100,
             });
@@ -46,13 +48,24 @@ jobs:
               }
             }
 
+            // Retire the old default label after this workflow reaches main.
+            // Deleting the repository label also removes it from existing issues.
+            const retired = 'status: needs-triage';
+            if (context.ref === 'refs/heads/main' && existing.some(label => label.name === retired)) {
+              try {
+                await github.rest.issues.deleteLabel({ ...repo, name: retired });
+              } catch (error) {
+                if (error.status !== 404) throw error;
+              }
+            }
+
             async function syncIssue(issue_number) {
               // Read current labels rather than an older webhook snapshot.
               const { data: issue } = await github.rest.issues.get({ ...repo, issue_number });
               if (issue.pull_request || issue.state !== 'open') return;
               const names = new Set(issue.labels.map(label => label.name));
               const active = statuses.filter(name => names.has(name));
-              let selected = active[0] || 'status: needs-triage';
+              let selected = active[0];
               if (active.length > 1) {
                 // The newest applied status wins, even if webhook runs arrive out of order.
                 const events = await github.paginate(github.rest.issues.listEvents, {
@@ -66,9 +79,6 @@ jobs:
                   return;
                 }
                 selected = latest.label.name;
-              }
-              if (!names.has(selected)) {
-                await github.rest.issues.addLabels({ ...repo, issue_number, labels: [selected] });
               }
               const remove = new Set(active.filter(name => name !== selected));
               if (selected !== 'status: discussion') remove.add('needs-info');
@@ -84,10 +94,10 @@ jobs:
                   if (error.status !== 404) throw error;
                 }
               }
-              core.info(`#${issue_number}: ${selected}`);
+              core.info(`#${issue_number}: ${selected || 'untriaged (no status label)'}`);
             }
 
-            if (context.eventName === 'workflow_dispatch') {
+            if (context.eventName === 'workflow_dispatch' || context.eventName === 'push') {
               const issues = await github.paginate(github.rest.issues.listForRepo, {
                 ...repo, state: 'open', per_page: 100,
               });
