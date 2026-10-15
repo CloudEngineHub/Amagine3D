@@ -6,6 +6,10 @@ For changes that need design discussion, open an issue using the
 [RFC template](../doc/RFC_TEMPLATE.md) (in Chinese). Use `RFC: Proposal title` as
 the issue title, copy the template sections into the body, and replace the placeholders.
 
+For an introduction to the CAD pipeline, read the
+[evidence-gated workflow overview](./cad-workflow.md). It explains who chooses
+repairs, what the runtime verifies, and how to interpret repair progress.
+
 Use Node.js 22.19.0 or newer, Python 3.10 through 3.13, and npm.
 
 ```bash

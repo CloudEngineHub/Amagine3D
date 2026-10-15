@@ -216,7 +216,8 @@ Amagine3D/
 
 每个会话拥有独立工作区和 Codex 状态目录。可编辑源码、制造文件、报告与预览都保留
 在该目录，浏览器通过 Three.js 渲染生成模型。更完整的设计见
-[威胁模型](./threat-model.zh-CN.md) 和 [安全上报](./SECURITY.zh-CN.md)。
+[CAD 修复流程概览](./cad-workflow.zh-CN.md)、[威胁模型](./threat-model.zh-CN.md)
+和 [安全上报](./SECURITY.zh-CN.md)。
 
 ## 项目状态
 

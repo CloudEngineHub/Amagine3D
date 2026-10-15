@@ -245,7 +245,8 @@ repair state machine.
 Every session has its own workspace and Codex state directory. Editable source,
 manufacturing files, reports, and previews stay together there, while the
 browser renders generated models with Three.js. For more detail, see the
-[threat model](./docs/threat-model.md) and [security reporting policy](./docs/SECURITY.md).
+[CAD workflow overview](./docs/cad-workflow.md),
+[threat model](./docs/threat-model.md), and [security reporting policy](./docs/SECURITY.md).
 
 ## Project Status
 
