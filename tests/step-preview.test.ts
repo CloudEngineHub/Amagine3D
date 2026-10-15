@@ -1,13 +1,14 @@
 import { strict as assert } from 'node:assert';
 import { createHash } from 'node:crypto';
 import { copyFile, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { createStepPreview } from '../server/step-preview.ts';
 import { parseStepPreview, stepPreviewUrl } from '../src/lib/step-preview.ts';
 
 test('real STEP preview is cached, deduplicated and rejects a stale revision', async () => {
-  const root = await mkdtemp(resolve('.agent/step-preview-test-'));
+  const root = await mkdtemp(join(tmpdir(), 'amagine-step-preview-'));
   try {
     const model = join(root, 'model.step');
     await copyFile(resolve('bundled-projects/amagine3d-pomodoro/focus-bar-logical-assembly.step'), model);
