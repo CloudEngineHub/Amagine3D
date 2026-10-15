@@ -17,14 +17,14 @@ test('a delayed artifact refresh cannot repopulate a new empty session', async (
   const scope = createSessionScope('previous');
   const response = deferred<string[]>();
   const isCurrentSession = scope.capture('previous');
-  let artifacts = ['previous.glb'];
+  let artifacts = ['previous.step'];
   const refresh = response.promise.then((next) => {
     if (isCurrentSession()) artifacts = next;
   });
 
   scope.activate('new');
   artifacts = [];
-  response.resolve(['previous-refreshed.glb']);
+  response.resolve(['previous-refreshed.step']);
   await refresh;
 
   assert.deepEqual(artifacts, []);
@@ -70,4 +70,23 @@ test('a stale callback cannot start valid work for a different active session', 
   scope.activate('a');
   assert.equal(isStaleRefresh(), false);
   assert.equal(scope.capture('a')(), true);
+});
+
+test('a late artifact and parameter response from an earlier turn cannot overwrite the same session', async () => {
+  const session = createSessionScope('same-session');
+  const turn = createSessionScope('turn-a');
+  const isSessionCurrent = session.capture('same-session');
+  const isTurnCurrent = turn.capture('turn-a');
+  const delayed = deferred<{ artifact: string; parameter: number }>();
+  let state = { artifact: 'draft-a.step', parameter: 1 };
+  const oldResponse = delayed.promise.then((next) => {
+    if (isSessionCurrent() && isTurnCurrent()) state = next;
+  });
+  turn.activate('turn-b');
+  state = { artifact: 'draft-b.step', parameter: 2 };
+  delayed.resolve({ artifact: 'late-draft-a.step', parameter: 3 });
+  await oldResponse;
+  assert.deepEqual(state, { artifact: 'draft-b.step', parameter: 2 });
+  assert.equal(isSessionCurrent(), true);
+  assert.equal(isTurnCurrent(), false);
 });

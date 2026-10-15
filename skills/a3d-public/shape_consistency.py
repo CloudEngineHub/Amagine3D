@@ -1,7 +1,7 @@
 """Compare display and manufacturing meshes without becoming a CAD compiler.
 
 The checker accepts either two mesh files directly or a semantic scene manifest
-whose parts mark a physical GLB and manufacturing STL.  It checks revision and
+whose parts mark a physical STEP and manufacturing STL.  It checks revision and
 scale metadata, dimensions, and sampled bidirectional point-to-surface distance.
 It deliberately does not repair, rescale, boolean, or otherwise mutate geometry.
 """
@@ -23,7 +23,7 @@ from scene_contract import validate as validate_scene
 
 
 REPORT_SCHEMA = "evidence-shape-consistency/v1"
-MANIFEST_REPORT_SCHEMA = "evidence-shape-consistency-manifest/v1"
+MANIFEST_REPORT_SCHEMA = "evidence-shape-consistency-manifest/v2"
 
 
 class ConsistencyError(RuntimeError):
@@ -47,7 +47,7 @@ def _scene_mesh(
     missing = sorted(set(selected) - set(available))
     if missing:
         raise ConsistencyError(
-            f"{context} is missing requested GLB nodes: {', '.join(missing)}"
+            f"{context} is missing requested geometry nodes: {', '.join(missing)}"
         )
 
     meshes: list[trimesh.Trimesh] = []
@@ -64,7 +64,7 @@ def _scene_mesh(
 
 
 def load_artifact(spec: dict[str, Any], base_dir: Path) -> trimesh.Trimesh:
-    """Load one GLB/STL artifact and place it in the canonical scene frame."""
+    """Load one STEP/STL artifact and place it in the canonical scene frame."""
 
     raw_path = spec.get("path")
     if not isinstance(raw_path, str) or not raw_path.strip():
@@ -75,21 +75,33 @@ def load_artifact(spec: dict[str, Any], base_dir: Path) -> trimesh.Trimesh:
     if not path.is_file():
         raise ConsistencyError(f"artifact does not exist: {path}")
 
-    try:
-        loaded = trimesh.load(path, force="scene", process=False)
-    except Exception as error:
-        raise ConsistencyError(f"cannot load mesh artifact {path}: {error}") from error
-    if isinstance(loaded, trimesh.Trimesh):
-        mesh = loaded
-    elif isinstance(loaded, trimesh.Scene):
-        names = spec.get("nodeNames")
-        mesh = _scene_mesh(
-            loaded,
-            node_names=list(names) if isinstance(names, list) else None,
-            context=str(path),
-        )
+    if path.suffix.lower() in {".step", ".stp"}:
+        from build123d import import_step
+        from geometry_binding import shape_to_mesh
+        shape = import_step(path)
+        shape.parent = None
+        solids = list(shape.solids())
+        if len(solids) > 1:
+            shape = solids[0].fuse(*solids[1:])
+        mesh = shape_to_mesh(shape, str(path))
+    elif path.suffix.lower() == ".stl":
+        try:
+            loaded = trimesh.load(path, force="scene", process=False)
+        except Exception as error:
+            raise ConsistencyError(f"cannot load mesh artifact {path}: {error}") from error
+        if isinstance(loaded, trimesh.Trimesh):
+            mesh = loaded
+        elif isinstance(loaded, trimesh.Scene):
+            names = spec.get("nodeNames")
+            mesh = _scene_mesh(
+                loaded,
+                node_names=list(names) if isinstance(names, list) else None,
+                context=str(path),
+            )
+        else:
+            raise ConsistencyError(f"artifact is not a supported mesh or scene: {path}")
     else:
-        raise ConsistencyError(f"artifact is not a supported mesh or scene: {path}")
+        raise ConsistencyError("shape comparison requires STEP or STL")
 
     transform = spec.get("toCanonicalTransform")
     if transform is not None:
@@ -310,7 +322,7 @@ def compare_manifest(
     sample_count: int = 5000,
     seed: int = 17,
 ) -> dict[str, Any]:
-    """Compare every requested part with marked physical GLB and STL artifacts."""
+    """Compare every requested part with marked physical STEP and STL artifacts."""
 
     errors = validate_scene(manifest, base_dir)
     if errors:
@@ -333,20 +345,20 @@ def compare_manifest(
             skipped.append(part_id)
             continue
         if not isinstance(artifacts, dict) or not {
-            "physicalGlb",
+            "masterStep",
             "manufacturingStl",
         }.issubset(artifacts):
             raise ConsistencyError(
-                f"part {part_id} must mark both physicalGlb and manufacturingStl"
+                f"part {part_id} must mark both masterStep and manufacturingStl"
             )
-        physical = artifacts["physicalGlb"]
+        physical = artifacts["masterStep"]
         manufacturing = artifacts["manufacturingStl"]
         mesh_a = load_artifact(physical, base_dir)
         mesh_b = load_artifact(manufacturing, base_dir)
         result = compare_meshes(
             mesh_a,
             mesh_b,
-            label_a=f"{part_id}:physicalGlb",
+            label_a=f"{part_id}:masterStep",
             label_b=f"{part_id}:manufacturingStl",
             revision_a=physical.get("revision"),
             revision_b=manufacturing.get("revision"),
@@ -361,7 +373,7 @@ def compare_manifest(
         result["representationMaster"] = part["representationMaster"]
         results[part_id] = result
     if not results:
-        raise ConsistencyError("no selected part marks both physical GLB and STL")
+        raise ConsistencyError("no selected part marks both physical STEP and STL")
     return {
         "parts": results,
         "pass": all(result["pass"] for result in results.values()),

@@ -284,14 +284,13 @@ def bind_display_component(
     linear_tolerance_mm: float = 0.02,
     angular_tolerance_rad: float = 0.1,
 ) -> dict[str, Any]:
-    """Bind a BRep or triangle surface as a non-manufactured scene component.
+    """Bind a BRep solid or face as a non-manufactured scene component.
 
     The receiving part and its physical feature remain the scene's source of
-    ownership. The source mesh uses assembly coordinates and unit scale. PLY is
-    recommended for visual surfaces; STL sources are also supported. Neither
+    ownership. The STEP source uses assembly coordinates and unit scale. Neither
     a closed volume nor a printable dummy is required for a display component.
     """
-    from display_glb import DisplayGlbError, appearance as normalize_appearance
+    from display_step import DisplayStepError, appearance as normalize_appearance
 
     for value, pattern, label in (
         (node_id, ID_PATTERN, "node_id"),
@@ -310,41 +309,28 @@ def bind_display_component(
             metallic=appearance.get("metallic", 0.0),
             roughness=appearance.get("roughness", 0.58),
         )
-    except DisplayGlbError as error:
+    except DisplayStepError as error:
         raise GeometryBindingError(str(error)) from error
     linear = _positive_finite(linear_tolerance_mm, "linear_tolerance_mm")
     angular = _positive_finite(angular_tolerance_rad, "angular_tolerance_rad")
     destination = Path(path).expanduser().resolve()
-    file_type = destination.suffix.lower().lstrip(".")
-    if file_type not in {"ply", "stl"}:
-        raise GeometryBindingError("display source path must end in .ply or .stl")
-    if isinstance(shape, trimesh.Trimesh):
-        mesh = _display_triangle_mesh(shape, f"display component {feature_id}")
-    else:
-        try:
-            valid_value = shape.is_valid
-            if not bool(valid_value() if callable(valid_value) else valid_value):
-                raise ValueError("invalid BRep")
-            vertices, faces = tessellate_brep(shape, linear, angular)
-            mesh = trimesh.Trimesh(
-                vertices=[[vertex.X, vertex.Y, vertex.Z] for vertex in vertices],
-                faces=faces,
-                process=False,
-            )
-        except Exception as error:
-            raise GeometryBindingError(
-                f"display component {feature_id} could not be tessellated: {error}"
-            ) from error
-        mesh = _display_triangle_mesh(mesh, f"display component {feature_id}")
-    try:
-        payload = mesh.export(file_type=file_type)
-        if not isinstance(payload, bytes):
-            raise ValueError("exporter did not return binary mesh data")
-        readback = trimesh.load(BytesIO(payload), file_type=file_type, process=False)
-        _display_triangle_mesh(readback, f"display component {feature_id} readback")
-    except (ValueError, TypeError, OSError) as error:
-        raise GeometryBindingError(f"cannot export display component {feature_id}: {error}") from error
-    digest = _write_payload(payload, destination)
+    if destination.suffix.lower() not in {".step", ".stp"} or isinstance(shape, trimesh.Trimesh):
+        raise GeometryBindingError("display source requires BRep and a .step or .stp destination")
+    from build123d import Unit, export_step
+    from copy import deepcopy
+    from export_audit import _audit_step, geometry_record
+    expected = geometry_record(shape)
+    if not expected["valid"]:
+        raise GeometryBindingError("display source must be valid CAD")
+    value = deepcopy(shape)
+    value.parent = None
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not export_step(value, destination, unit=Unit.MM):
+        raise GeometryBindingError("display component STEP export failed")
+    audit = _audit_step(destination, expected, feature_id)
+    if not audit["pass"]:
+        raise GeometryBindingError("; ".join(audit["errors"]))
+    digest = sha256(destination.read_bytes()).hexdigest()
     return {
         "id": node_id,
         "featureId": feature_id,
@@ -354,7 +340,7 @@ def bind_display_component(
         "recipe": {
             "kind": DISPLAY_COMPONENT_KIND,
             "parameters": {
-                "sourceMesh": {"path": str(destination), "scale": 1.0, "sha256": digest},
+                "sourceStep": {"path": str(destination), "scale": 1.0, "sha256": digest},
                 "appearance": visual,
             },
         },

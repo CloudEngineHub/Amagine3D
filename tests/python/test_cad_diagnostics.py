@@ -201,3 +201,36 @@ class CadDiagnosticsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ContractIssueTests(unittest.TestCase):
+    def test_contract_issue_keeps_rule_identity_and_rejects_plain_text(self) -> None:
+        issue = cad_diagnostics.ContractIssue(
+            "interfaces[mount].kind must be one of the locator kinds",
+            rule_id="self-tapping-locator-kind",
+            field="interfaces[mount].kind",
+            interface_id="mount",
+            subject_id="mount",
+            actual="glue-face",
+            expected=["collar-socket", "pin-socket"],
+            repair_hint="Set interfaces[mount].kind.",
+        )
+
+        self.assertIsInstance(issue, str)
+        self.assertIn("locator kinds", issue)
+        self.assertEqual("; ".join([issue, "next"]), f"{issue}; next")
+        self.assertEqual(
+            cad_diagnostics.contract_issue(issue),
+            {
+                "code": "AUTHORING.INVALID",
+                "message": "interfaces[mount].kind must be one of the locator kinds",
+                "ruleId": "self-tapping-locator-kind",
+                "field": "interfaces[mount].kind",
+                "interfaceId": "mount",
+                "subjectId": "mount",
+                "actual": "glue-face",
+                "expected": ["collar-socket", "pin-socket"],
+                "repairHint": "Set interfaces[mount].kind.",
+            },
+        )
+        self.assertIsNone(cad_diagnostics.contract_issue("plain error text"))

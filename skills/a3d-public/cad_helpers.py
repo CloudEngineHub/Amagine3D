@@ -15,6 +15,7 @@ import importlib.util
 import json
 import math
 import os
+from copy import deepcopy
 from pathlib import Path
 import re
 import sys
@@ -30,10 +31,10 @@ from cad_diagnostics import (
     source_diagnostics_payload,
     write_source_diagnostics,
 )
-from display_glb import (
-    DisplayGlbError,
+from display_step import (
+    DisplayStepError,
     appearance as display_appearance,
-    export_display_glb,
+    export_display_step,
     load_display_components,
 )
 from geometry_binding import (
@@ -230,7 +231,7 @@ def _display_style(color: tuple[int, int, int]) -> dict:
         return display_appearance(
             "#" + "".join(f"{channel:02X}" for channel in color)
         )
-    except DisplayGlbError as error:
+    except DisplayStepError as error:
         raise BuildInvariantError(str(error)) from error
 
 
@@ -400,20 +401,12 @@ def _part_color_plan(
     if part_colors is None:
         if not isinstance(declared, list):
             raise BuildInvariantError("intent color_regions must be a list")
-        declared_by_name = {
-            item["name"]: item
-            for item in declared
-            if isinstance(item, dict) and isinstance(item.get("name"), str)
-        }
-        if set(declared_by_name) != part_names or any(
-            declared_by_name[part_name].get("part") != part_name
-            for part_name in part_names
-        ):
-            raise BuildInvariantError(
-                "internal color regions require the matching region export path"
-            )
+        try:
+            declared_by_part = _intent_contract.whole_part_color_regions(intent_data, part_names)
+        except ValueError as error:
+            raise BuildInvariantError(str(error)) from error
         part_colors = {
-            part_name: declared_by_name[part_name].get("hex")
+            part_name: declared_by_part[part_name]["hex"]
             for part_name in part_names
         }
     if not isinstance(part_colors, dict):
@@ -434,31 +427,12 @@ def _part_color_plan(
             )
         normalized[part_name] = color.upper()
 
-    color_errors = validate_color_regions(
-        declared,
-        intent_data.get("manufacturing"),
-        intent_data.get("part"),
-    )
-    if color_errors:
-        raise BuildInvariantError(
-            "invalid unified color intent: " + "; ".join(color_errors)
-        )
-    declared_by_name = {
-        item["name"]: item
-        for item in declared
-        if isinstance(item, dict) and isinstance(item.get("name"), str)
-    }
-    if set(declared_by_name) != part_names or any(
-        declared_by_name[part_name].get("part") != part_name
-        for part_name in part_names
-        if part_name in declared_by_name
-    ):
-        raise BuildInvariantError(
-            "BRep assembly part_colors require exactly one whole-part intent "
-            "color region per exported part, with region name equal to its owner"
-        )
+    try:
+        declared_by_part = _intent_contract.whole_part_color_regions(intent_data, part_names)
+    except ValueError as error:
+        raise BuildInvariantError(str(error)) from error
     for part_name, color in normalized.items():
-        if str(declared_by_name[part_name].get("hex", "")).upper() != color:
+        if str(declared_by_part[part_name]["hex"]).upper() != color:
             raise BuildInvariantError(
                 f"intent color for {part_name!r} does not match part_colors"
             )
@@ -486,7 +460,7 @@ def _part_color_plan(
             part=material["id"],
             region=None,
             scope="whole-part",
-            source_id=material["id"],
+            source_id=declared_by_part[material["id"]]["name"],
             source_kind="intent-color-region",
         )
         for material in materials
@@ -1517,7 +1491,7 @@ def export_part(
     scene_path: str,
     source_path: str,
 ) -> dict:
-    """Export STEP/STL, appearance GLB, optional material 3MF, and evidence."""
+    """Export STEP/STL, display STEP, optional material 3MF, and evidence."""
     stats = _stats(shape)
     if not stats["valid"] or stats["solid_count"] != 1:
         raise BuildInvariantError(
@@ -1548,6 +1522,13 @@ def export_part(
         {name},
     )
     manufactured_color = bool(material_bindings)
+    from cad_stages import artifact_stage, persist_cad_geometry
+    assemble_step_path = output / f"{name}.step"
+    cad_shape = deepcopy(shape)
+    cad_shape.label = name
+    cad_stage = persist_cad_geometry(output, name, {"step": (cad_shape, assemble_step_path)},
+        [{"name": name, "role": "manufactured", "stepArtifact": "step", "geometry": export_geometry_record(shape),
+          "appearance": _display_style(_rgb_color(part_colors[name]))}])
     intent_path_resolved = Path(intent_path).resolve()
     print_orientation = _select_print_orientation(
         shape,
@@ -1557,28 +1538,23 @@ def export_part(
     print_shape = _apply_print_orientation(shape, print_orientation)
     print_stats = _stats(print_shape)
     assemble_step_path = output / f"{name}.step"
-    display_glb_path = output / f"{name}-display.glb"
+    display_step_path = output / f"{name}-display.step"
     stl_path = output / f"{name}.stl"
     report_path = output / f"{name}_report.json"
     try:
         shape.label = name
     except Exception:
         pass
-    export_step(shape, str(assemble_step_path), unit=Unit.MM)
     try:
         display_components = load_display_components(scene_data, scene_path)
-        display_nodes = export_display_glb(
-            (
-                (
-                    name,
-                    _display_mesh(shape, name),
-                    _display_style(_rgb_color(part_colors[name])),
-                ),
-            ),
-            display_glb_path,
-            display_items=display_components,
-        )
-    except DisplayGlbError as error:
+        with artifact_stage(cad_stage, "tessellation"):
+            display_mesh = shape
+        with artifact_stage(cad_stage, "display"):
+            display_nodes = export_display_step(
+                ((name, display_mesh, _display_style(_rgb_color(part_colors[name]))),),
+                display_step_path, display_items=display_components,
+            )
+    except DisplayStepError as error:
         raise BuildInvariantError(str(error)) from error
     export_shape_stl(print_shape, stl_path)
 
@@ -1642,8 +1618,8 @@ def export_part(
             steps={
                 f"step:{name}": (assemble_step_path, export_geometry_record(shape)),
             },
-            glb=(
-                display_glb_path,
+            display_step=(
+                display_step_path,
                 [name, *[node_id for node_id, _, _ in display_components]],
             ),
         )
@@ -1672,7 +1648,7 @@ def export_part(
         "artifactMatrix": {
             "parts": {
                 name: {
-                    "glb": "required",
+                    "displayStep": "required",
                     "step": "required",
                     "stl": "required",
                     "threeMf": (
@@ -1686,8 +1662,8 @@ def export_part(
             f"step:{name}": artifact_record(
                 assemble_step_path, coordinateFrame="semantic"
             ),
-            "glb:display": {
-                **artifact_record(display_glb_path, coordinateFrame="semantic"),
+            "step:display": {
+                **artifact_record(display_step_path, coordinateFrame="semantic"),
                 **display_nodes,
             },
             **color_artifacts,
@@ -1736,7 +1712,7 @@ def export_part(
         "revision": scene_data["revision"],
         "runId": new_run_id(),
         "scale": 1.0,
-        "schema": "evidence-a3d-build/v1",
+        "schema": "evidence-a3d-build/v2",
         "warnings": [],
         **({"materialPlan": material_plan} if material_plan is not None else {}),
     }
@@ -1764,21 +1740,20 @@ def _packing_diagnostic_candidate(normalized, name, output, colors, inputs, scen
     run_id = new_run_id()
     prefix = f"{name}-{run_id}-diagnostic"
     step_path = output / f"{prefix}.step"
-    glb_path = output / f"{prefix}.glb"
     preview_path = output / f"{prefix}.png"
     assembly = Compound(children=[shape for shape, _ in normalized.values()])
     export_step(assembly, str(step_path), unit=Unit.MM)
-    export_display_glb(
-        ((part, _display_mesh(shape, part), _display_style(_rgb_color(colors[part])))
+    export_display_step(
+        ((part, shape, _display_style(_rgb_color(colors[part])))
          for part, (shape, _) in normalized.items()),
-        glb_path, display_items=load_display_components(scene_data, scene_path),
+        step_path, display_items=load_display_components(scene_data, scene_path),
     )
-    rendered = render_contact_sheet(_render_inputs(glb_path, DEFAULT_MATERIAL), 640,
+    rendered = render_contact_sheet(_render_inputs(step_path, DEFAULT_MATERIAL), 640,
                                     title="Diagnostic geometry — print layout incomplete")
     rendered.image.save(preview_path, format="PNG")
     return {"runId": run_id, "inputBindings": inputs, "manufacturingValidated": False,
             "artifacts": {kind: {"path": str(path.resolve()), "sha256": _digest(path)}
-                          for kind, path in (("step", step_path), ("glb", glb_path), ("preview", preview_path))}}
+                          for kind, path in (("step", step_path), ("preview", preview_path))}}
 
 
 def export_assembly(
@@ -1795,7 +1770,7 @@ def export_assembly(
     """Export a BRep-master multi-part assembly with whole-part color.
 
     Each named part must be one valid solid. The top-level STL is an arranged
-    print plate, while the STEP master and display GLB keep semantic assembly
+    print plate, while the STEP master and display STEP keep semantic assembly
     coordinates. ``part_colors`` binds declared intent colors; otherwise scene
     appearance or stable proposed colors are used. The same plate-aligned
     physical parts become a separate-parts 3MF; no export path applies scale.
@@ -1837,6 +1812,17 @@ def export_assembly(
     _validate_interface_evidence(manufacturing)
     output = Path(os.environ.get("AMAGINE3D_OUTPUT_DIR", out_dir))
     output.mkdir(parents=True, exist_ok=True)
+    from cad_stages import artifact_stage, persist_cad_geometry
+    cad_children, cad_steps, cad_objects = [], {}, []
+    for part_name, (shape, _) in normalized.items():
+        cad_shape = deepcopy(shape)
+        cad_shape.label = part_name
+        cad_children.append(cad_shape)
+        cad_steps[f"step:{part_name}"] = (cad_shape, output / f"{name}-{part_name}.step")
+        cad_objects.append({"name": part_name, "role": "manufactured", "stepArtifact": f"step:{part_name}",
+                            "geometry": export_geometry_record(shape), "appearance": _display_style(_rgb_color(normalized_colors[part_name]))})
+    cad_steps["step:assembly"] = (Compound(children=cad_children), output / f"{name}-assemble.step")
+    cad_stage = persist_cad_geometry(output, name, cad_steps, cad_objects)
 
     overlaps = {}
     names = list(normalized)
@@ -1951,7 +1937,6 @@ def export_assembly(
             "transform": print_transform,
         }
         step_path = output / f"{name}-{part_name}.step"
-        export_step(shape, str(step_path), unit=Unit.MM)
         artifacts[f"step:{part_name}"] = {
             "path": str(step_path.resolve()),
             "sha256": _digest(step_path),
@@ -1979,23 +1964,17 @@ def export_assembly(
         audit_stls[plate["stlKey"]] = (stl_path, export_geometry_record(print_plate))
 
     assemble_step_path = output / f"{name}-assemble.step"
-    display_glb_path = output / f"{name}-display.glb"
-    export_step(assembly_shape, str(assemble_step_path), unit=Unit.MM)
+    display_step_path = output / f"{name}-display.step"
     try:
         display_components = load_display_components(scene_data, scene_path)
-        display_nodes = export_display_glb(
-            (
-                (
-                    part_name,
-                    _display_mesh(shape, part_name),
-                    _display_style(_rgb_color(normalized_colors[part_name])),
-                )
-                for part_name, (shape, _) in normalized.items()
-            ),
-            display_glb_path,
-            display_items=display_components,
-        )
-    except DisplayGlbError as error:
+        with artifact_stage(cad_stage, "tessellation"):
+            display_meshes = [(part_name, shape,
+                               _display_style(_rgb_color(normalized_colors[part_name])))
+                              for part_name, (shape, _) in normalized.items()]
+        with artifact_stage(cad_stage, "display"):
+            display_nodes = export_display_step(display_meshes, display_step_path,
+                                               display_items=display_components)
+    except DisplayStepError as error:
         raise BuildInvariantError(str(error)) from error
     artifacts["step:assembly"] = {
         "path": str(assemble_step_path.resolve()),
@@ -2005,9 +1984,9 @@ def export_assembly(
         assemble_step_path,
         export_geometry_record(assembly_shape),
     )
-    artifacts["glb:display"] = {
-        "path": str(display_glb_path.resolve()),
-        "sha256": _digest(display_glb_path),
+    artifacts["step:display"] = {
+        "path": str(display_step_path.resolve()),
+        "sha256": _digest(display_step_path),
         **display_nodes,
     }
 
@@ -2091,8 +2070,8 @@ def export_assembly(
         export_audit = audit_exports(
             stls=audit_stls,
             steps=audit_steps,
-            glb=(
-                display_glb_path,
+            display_step=(
+                display_step_path,
                 [
                     *normalized,
                     *[node_id for node_id, _, _ in display_components],
@@ -2112,7 +2091,7 @@ def export_assembly(
 
     manifest_artifacts = {}
     for key, record in artifacts.items():
-        if key == "step:assembly" or key.startswith("step:") or key == "glb:display":
+        if key == "step:assembly" or key.startswith("step:") or key == "step:display":
             frame = "semantic"
         elif key.startswith("stl:"):
             frame = "part-print"
@@ -2154,7 +2133,7 @@ def export_assembly(
         "artifactMatrix": {
             "parts": {
                 part_name: {
-                    "glb": "required",
+                    "displayStep": "required",
                     "step": "required",
                     "stl": "required",
                     "threeMf": "required",
@@ -2208,7 +2187,7 @@ def export_assembly(
         "revision": scene_data["revision"],
         "runId": new_run_id(),
         "scale": 1.0,
-        "schema": "evidence-a3d-build/v1",
+        "schema": "evidence-a3d-build/v2",
         "warnings": [],
     }
     manifest_errors = validate_manifest(report)

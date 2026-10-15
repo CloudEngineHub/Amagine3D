@@ -331,7 +331,7 @@ print(json.dumps([P['width'], P['module_width']]))
                 capture_output=True, text=True, encoding="utf-8", timeout=120,
             )
             self.assertNotEqual(failed.returncode, 0, failed.stdout + failed.stderr)
-            diagnostic = json.loads(failed.stdout)["issues"][0]["sourceIssue"]
+            diagnostic = json.loads(failed.stdout)["issues"][0]
             self.assertEqual(diagnostic["featureId"], "frame-locator")
             self.assertEqual(diagnostic["code"], "SOURCE.CUT_MISSED_OWNER")
             self.assertAlmostEqual(diagnostic["observed"]["removedMm3"], 0)

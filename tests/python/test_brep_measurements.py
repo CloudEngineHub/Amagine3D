@@ -38,6 +38,28 @@ class BrepMeasurementsTests(unittest.TestCase):
         for value, target in zip(actual, expected):
             self.assertAlmostEqual(value, target, places=places)
 
+    def test_optional_preview_uses_same_section_and_does_not_change_measurements(self):
+        from PIL import Image
+        shape = Box(20, 20, 10) - Cylinder(3, 12)
+        plane = Plane.XY
+        with patch.object(measurements, "_section_preview", wraps=measurements._section_preview) as render:
+            numeric = measurements.measure_section(shape, plane)
+            render.assert_not_called()
+            path = self.work / "section.png"
+            illustrated = measurements.measure_section(shape, plane, preview=path)
+            render.assert_called_once()
+        preview = illustrated.pop("preview")
+        self.assertEqual(numeric, illustrated)
+        self.assertEqual(preview["sha256"], sha256(path.read_bytes()).hexdigest())
+        with Image.open(path) as image:
+            # The central hole stays background; surrounding measured material
+            # is filled. This checks geometry portrayal, not implementation text.
+            self.assertEqual(image.getpixel((300, 320)), (244, 246, 248))
+            self.assertEqual(image.getpixel((500, 320)), (82, 125, 158))
+        empty = measurements.measure_section(shape, Plane.XY.offset(100), preview=self.work / "empty.png")
+        self.assertEqual(empty["status"], "empty")
+        self.assertEqual(empty["material_island_count"], 0)
+
     def _section_audit_inputs(self, step_path, sections, *, owner="part", other_step=None,
                               dimensions=(54, 40, 10)):
         owners = {"mouth-outside": owner}
@@ -50,7 +72,7 @@ class BrepMeasurementsTests(unittest.TestCase):
             intent["features"][0]["section_dimensions"] = deepcopy(sections)
         intent_path.write_text(json.dumps(intent))
         # Only STEP-check inputs are needed here; complete manifests are tested separately.
-        report = {"schema": "evidence-a3d-build/v1",
+        report = {"schema": "evidence-a3d-build/v2",
                   "backend": "brep-part" if other_step is None else "brep-assembly",
                   "inputs": {"intent": intent_ref(intent_path)},
                   "parts": {part: {"semantic": {"boundsMm": {"size": list(dimensions)}}}

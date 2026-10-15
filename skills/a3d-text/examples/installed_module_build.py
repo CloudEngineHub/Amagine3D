@@ -122,7 +122,7 @@ def main():
     if P["show_module_reference"]:
         display_nodes.append(bind_display_component(
             node_id="purchased-module", feature_id="module-reference", physical_feature_ref="module-space",
-            shape=module, path=OUT / "installed-module-reference.ply",
+            shape=module, path=OUT / "installed-module-reference.step",
             appearance={"baseColor": "#163946", "roughness": 0.25, "metallic": 0.0},
         ))
 

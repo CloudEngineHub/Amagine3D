@@ -62,6 +62,7 @@ class InstallationAuditTests(unittest.TestCase):
                     passage_envelope=box(8, 4, 8, -1))
                 result = audit(path)
                 self.assertEqual(result["pass"], passed, result)
+                json.dumps(result)
                 if not passed:
                     self.assertTrue(any("passage" in str(error) for error in result["errors"]))
 
@@ -103,6 +104,31 @@ class InstallationAuditTests(unittest.TestCase):
             intent["features"][0]["installation_checks"] = ["seal-all-bottoms"]
             self.assertTrue(any("installation_checks" in e for e in validate_intent(intent, root)))
 
+    def test_retention_travel_error_names_the_check_rule_and_values(self):
+        from cad_diagnostics import contract_issue
+
+        with tempfile.TemporaryDirectory(dir=ROOT / "workspace") as directory:
+            root = Path(directory)
+            _, scene, intent = self.fixture(root, box(24, 34, 2), ["clearance", "retention"],
+                envelope=box(20, 30, 1.6, 2), retainer_parts=["holder"],
+                free_travel_mm=0.29, stop_travel_mm=0.35)
+            record = deepcopy(scene["installationChecks"][0])
+            record["freeTravelMm"] = 5.0
+            record["stopTravelMm"] = 1.0
+            errors = validate_installations([record], intent, {"holder"}, root)
+            issue = contract_issue(next(e for e in errors if "retention requires" in e))
+
+        self.assertIsNotNone(issue)
+        self.assertEqual(issue["ruleId"], "installation-retention-travel")
+        self.assertEqual(issue["field"], "freeTravelMm")
+        self.assertEqual(issue["featureId"], "mount")
+        self.assertEqual(issue["subjectId"], "mount")
+        self.assertEqual(issue["actual"], {"freeTravelMm": 5.0, "stopTravelMm": 1.0})
+        self.assertEqual(issue["expected"], "0 <= freeTravelMm < stopTravelMm")
+        self.assertIn("0 <= freeTravelMm < stopTravelMm", issue["repairHint"])
+        self.assertIn("freeTravelMm=5.0", issue["repairHint"])
+        self.assertIn("stopTravelMm=1.0", issue["repairHint"])
+
     def test_non_installation_tasks_do_not_gain_requirements(self):
         self.assertEqual(validate_installations([], {"features": []}, {"part"}), [])
 
@@ -114,6 +140,10 @@ class InstallationAuditTests(unittest.TestCase):
             result = audit(path)
             self.assertFalse(result["pass"])
             self.assertIn("extend into its component", str(result["errors"]))
+            error = next(item for item in result["errors"] if isinstance(item, dict) and item.get("check", "").endswith("reaches-component"))
+            self.assertEqual(error["featureId"], "mount")
+            self.assertEqual(error["observed"]["overlapMm3"], 0)
+            self.assertEqual(error["expected"], {"contact": True, "thresholdMm3": 0.01})
 
     def test_unknown_parts_and_malformed_axis_are_rejected_without_crashing(self):
         with tempfile.TemporaryDirectory(dir=ROOT / "workspace") as directory:

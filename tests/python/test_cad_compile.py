@@ -22,6 +22,7 @@ SKILL = ROOT / "skills" / "a3d-public"
 if str(SKILL) not in sys.path:
     sys.path.insert(0, str(SKILL))
 
+import authoring  # noqa: E402
 import cad_compile  # noqa: E402
 from cad_compile import (  # noqa: E402
     CommandResult,
@@ -59,7 +60,7 @@ def _write_scene(root: Path, intent_path: Path) -> Path:
     scene_path.write_text(
         json.dumps(
             {
-                "schema": "evidence-semantic-scene/v1",
+                "schema": "evidence-semantic-scene/v2",
                 "revision": "cad-compile-test-001",
                 "intentRef": intent_ref(intent_path),
                 "units": "mm",
@@ -127,10 +128,10 @@ def _minimal_report(
 ) -> tuple[Path, dict]:
     stl = root / "part.stl"
     step = root / "part.step"
-    display = root / "part-display.glb"
+    display = root / "part-display.step"
     stl.write_bytes(b"solid part\nendsolid part\n")
     step.write_bytes(b"STEP fixture")
-    display.write_bytes(b"GLB fixture")
+    display.write_bytes(b"STEP display fixture")
     intent = json.loads(intent_path.read_text(encoding="utf-8"))
     profile = Path(intent["printability"]["profile"]["path"])
     geometry = {
@@ -140,17 +141,20 @@ def _minimal_report(
         "valid": True,
         "volumeMm3": 1,
     }
+    display_scene = root / "part-display.step.scene.json"
+    display_scene.write_text(json.dumps({"schema": "a3d-step-display/v1", "units": "mm", "step": _bound(display), "objects": []}))
     report = {
-        "schema": "evidence-a3d-build/v1",
+        "schema": "evidence-a3d-build/v2",
         "backend": "brep-part",
         "part": "part",
         "pass": True,
         "revision": "cad-compile-test-001",
+        "coordinateFrames": {"part-print": {"partTransforms": {"part": [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]}}},
         "inputs": {
             "intent": _bound(intent_path, schema="evidence-cad-intent/v5"),
             "scene": _bound(
                 scene_path,
-                schema="evidence-semantic-scene/v1",
+                schema="evidence-semantic-scene/v2",
                 revision="cad-compile-test-001",
             ),
             "source": _bound(source_path, schema="python-source/v1"),
@@ -162,7 +166,7 @@ def _minimal_report(
         "artifacts": {
             "stl:part": _bound(stl, coordinateFrame="part-print"),
             "step:part": _bound(step, coordinateFrame="semantic"),
-            "glb:display": _bound(display, coordinateFrame="semantic"),
+            "step:display": {**_bound(display, coordinateFrame="semantic"), "scene": _bound(display_scene)},
         },
         "parts": {
             "part": {
@@ -185,6 +189,8 @@ def _audit_schema(stage: str) -> str:
         return "evidence-mesh-audit/v3"
     if stage.startswith("step-qa:"):
         return "evidence-step-audit/v1"
+    if stage == "shape-consistency":
+        return "evidence-shape-consistency-manifest/v2"
     if stage == "color-qa":
         return "evidence-color-print-package-audit/v1"
     raise AssertionError(f"no test audit schema declared for stage {stage}")
@@ -241,8 +247,9 @@ class _PassingRunner:
             evidence.write_text(
                 json.dumps(
                     {
-                        "schema": "evidence-render/v2",
+                        "schema": "evidence-render/v3",
                         "meshes": [_bound(display)],
+                        "sourceScenes": [{"step": _bound(display), "scene": _bound(Path(str(display) + ".scene.json"))}],
                         "preview": _bound(preview),
                         "matched_view": {
                             **_bound(reference),
@@ -686,7 +693,8 @@ class CadCompileTests(unittest.TestCase):
                     output.write_text(json.dumps({
                         "schema": "evidence-installation-audit/v1", "pass": False,
                         "errors": [{"code": "QA.INSTALLATION_FAILED", "check": "mount/passage",
-                                    "message": "required passage is blocked"}],
+                                    "message": "required passage is blocked", "featureId": "part-body", "part": "part",
+                                    "observed": {"overlapMm3": 1712.72}, "expected": {"contact": False, "thresholdMm3": 0.01}}],
                     }))
                     return CommandResult(returncode=1, elapsed_ms=1, output_tail="")
                 return super().run(stage, argv, **kwargs)
@@ -703,6 +711,20 @@ class CadCompileTests(unittest.TestCase):
             self.assertIn("diagnosticPreview", result["artifacts"])
             self.assertNotIn("preview", result["artifacts"])
             self.assertTrue(any(i["code"] == "QA.INSTALLATION_FAILED" for i in result["issues"]))
+            issue = next(i for i in persisted["issues"] if i["code"] == "QA.INSTALLATION_FAILED")
+            self.assertEqual(issue["featureId"], "part-body")
+            self.assertEqual(issue["part"], "part")
+            self.assertEqual(issue["observed"], {"overlapMm3": 1712.72})
+            self.assertEqual(issue["expected"]["thresholdMm3"], 0.01)
+            import agent_api
+            from agent_protocol import binding
+            snapshot = agent_api.save(root, ".a3d-agent/runs/failed-installation.json", persisted)
+            ref = binding(snapshot)
+            page = agent_api.inspect_report(root, {"report": ref["path"], "sha256": ref["sha256"], "field": "/issues/0"})
+            fields = {item["field"].rsplit("/", 1)[-1]: item["value"] for item in page["items"]}
+            self.assertEqual(fields["observed"], issue["observed"])
+            agent_api.save(root, "part_compile-result.json", {"status": "newer-run"})
+            self.assertEqual(json.loads(snapshot.read_text())["issues"][0]["expected"], issue["expected"])
 
     def test_source_failure_preserves_full_traceback_but_prints_compact_root_cause(self) -> None:
         traceback = (
@@ -1142,8 +1164,8 @@ class CadCompileTests(unittest.TestCase):
             {
                 "artifacts": {
                     "3mf": {"path": "/tmp/model.3mf"},
-                    "glb:display": {
-                        "path": "/tmp/model.glb",
+                    "step:display": {
+                        "path": "/tmp/model.step",
                         "readbackBaseColors": {"body": "#102030"},
                     },
                     "plate-stl:body": {
@@ -1161,7 +1183,7 @@ class CadCompileTests(unittest.TestCase):
             facts["deliverables"],
             {
                 "3mf": "/tmp/model.3mf",
-                "glb:display": "/tmp/model.glb",
+                "step:display": "/tmp/model.step",
                 "step:body": "/tmp/body.step",
             },
         )
@@ -1261,7 +1283,7 @@ class CadCompileTests(unittest.TestCase):
             self.assertFalse(result["pass"], result)
             self.assertEqual(
                 holder["runner"].calls,
-                ["source", "build-check", "render", "mesh-qa:part", "step-qa:part"],
+                ["source", "build-check", "render", "mesh-qa:part", "shape-consistency", "step-qa:part"],
             )
             issue = next(
                 issue
@@ -1511,7 +1533,7 @@ class CadCompileTests(unittest.TestCase):
                             "inputBindings": {name: _bound(path) for name, path in (("intent", intent), ("source", source), ("scene", scene), ("profile", root / "printer-profile.json"))},
                             "artifacts": {},
                         }
-                        for kind, suffix in (("step", ".step"), ("glb", ".glb"), ("preview", ".png")):
+                        for kind, suffix in (("step", ".step"), ("preview", ".png")):
                             path = root / f"part-{run_id}-diagnostic{suffix}"
                             path.write_bytes(b"diagnostic geometry fixture")
                             candidate["artifacts"][kind] = _bound(path)
@@ -1556,7 +1578,7 @@ class CadCompileTests(unittest.TestCase):
                     self.assertNotIn("diagnosticPreview", result["artifacts"])
                     self.assertTrue(any(issue["code"] == "SOURCE.DIAGNOSTIC_PROVENANCE_INVALID" for issue in result["issues"]))
                 else:
-                    self.assertTrue({"diagnosticPreview", "diagnosticStep", "diagnosticGlb", "diagnosticSourceEvidence"} <= result["artifacts"].keys())
+                    self.assertTrue({"diagnosticPreview", "diagnosticStep", "diagnosticSourceEvidence"} <= result["artifacts"].keys())
                     evidence = json.loads(Path(result["artifacts"]["diagnosticSourceEvidence"]["path"]).read_text())
                     self.assertFalse(evidence["manufacturingValidated"])
                     self.assertEqual(evidence["runId"], result["runId"])
@@ -1667,7 +1689,8 @@ class CadCompileTests(unittest.TestCase):
             )
 
             self.assertFalse(result["pass"], result)
-            self.assertNotIn("freshness", runner.calls)
+            self.assertIn("freshness", runner.calls)
+            self.assertEqual(result["status"], "awaiting-preview")
             self.assertEqual(
                 [issue["code"] for issue in result["issues"]],
                 ["VISUAL.RENDER_TIMEOUT"],
@@ -1825,7 +1848,7 @@ class CadCompileTests(unittest.TestCase):
                 )
 
                 self.assertFalse(result["pass"], result)
-                self.assertEqual(result["issues"][-1]["code"], "FRESHNESS.CHECK_FAILED")
+                self.assertTrue(any(issue["code"] == "FRESHNESS.CHECK_FAILED" for issue in result["issues"]))
                 self.assertNotIn("freshnessAudit", result["artifacts"])
                 self.assertEqual(old_audit.read_bytes(), b"previous valid audit\n")
 
@@ -2124,6 +2147,7 @@ class CadCompileTests(unittest.TestCase):
                     "build-check",
                     "render",
                     "mesh-qa:part",
+                    "shape-consistency",
                     "step-qa:part",
                     "freshness",
                 ],
@@ -2247,7 +2271,7 @@ class CadCompileTests(unittest.TestCase):
             self.assertNotIn("preview", result["artifacts"])
 
     def test_changes_during_qa_cannot_promote_a_stale_render_binding(self) -> None:
-        for target in ("glb", "preview", "reference-preview", "source", "diagnostic"):
+        for target in ("step", "preview", "reference-preview", "source", "diagnostic"):
             with self.subTest(target=target), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 old_pointer = root / "part_render.json"
@@ -2265,8 +2289,8 @@ class CadCompileTests(unittest.TestCase):
                                 "diagnostic": Path(argv[argv.index("--report") + 1]).name,
                             }
                         elif stage == "mesh-qa:part":
-                            if target == "glb":
-                                path = Path(self.report["artifacts"]["glb:display"]["path"])
+                            if target == "step":
+                                path = Path(self.report["artifacts"]["step:display"]["path"])
                             elif target == "source":
                                 path = Path(self.report["inputs"]["source"]["path"])
                             else:
@@ -2824,6 +2848,37 @@ class InputProvenanceTests(unittest.TestCase):
                                          scene=self.scene, source=self.source, output_dir=Path(".")),
                            runner_factory=lambda _: self.runner)
 
+    def test_overwritten_frozen_intent_reports_exact_restore_binding_before_source_runs(self):
+        original = self.intent.read_bytes()
+        self.assertTrue(self.compile()["pass"])
+        self.intent.write_bytes(original + b"\n")
+        result = self.compile()
+        self.assertFalse(result["pass"])
+        self.assertEqual(self.runner.calls, [])
+        issue = next(item for item in result["issues"] if item["code"] == "CONTRACT.INTENT_HISTORY_UNVERIFIED")
+        self.assertEqual(issue["expected"]["sha256"], sha256(original).hexdigest())
+        snapshot = issue["observed"]["byteSnapshot"]
+        self.assertEqual(snapshot["sha256"], sha256(original).hexdigest())
+        self.assertEqual(Path(snapshot["path"]).read_bytes(), original)
+        self.assertEqual(self.intent.read_bytes(), original + b"\n")
+        self.intent.write_bytes(Path(snapshot["path"]).read_bytes())
+        self.assertTrue(self.compile()["pass"])
+
+    def test_intent_field_structure_and_hint_survive_full_compile_reporting(self):
+        import agent_api
+        document = json.loads(self.intent.read_text())
+        document["features"] = []
+        self.intent.write_text(json.dumps(document))
+        validation = agent_api.dispatch(self.root, "validate", {"intent": self.intent.name})
+        report = json.loads(Path(validation["report"]["path"]).read_text())
+        problem = next(issue for issue in report["issues"] if issue.get("field") == "/features")
+        result = self.compile()
+        compiled = next(issue for issue in result["issues"] if issue.get("field") == "/features")
+        self.assertEqual(compiled["code"], "CONTRACT.INTENT_INVALID")
+        self.assertEqual(compiled["expected"], problem["expected"])
+        self.assertEqual(compiled["repairHint"], problem["repairHint"])
+        self.assertEqual(self.runner.calls, [])
+
     def test_old_unchanged_inputs_compile_without_marker_or_with_late_legacy_marker(self):
         before = {p: cad_compile._current_file_binding(p) for p in (self.intent, self.source, self.profile)}
         for marker in (None, self.root / ".legacy-marker"):
@@ -2910,6 +2965,277 @@ class InputProvenanceTests(unittest.TestCase):
         self.assertIsNone(full["inputs"]["marker"])
         self.assertIn("SOURCE.EXECUTION_FAILED", [x["code"] for x in full["issues"]])
         self.assertIn("selected source reached", (self.root / "part_compile.log").read_text())
+
+
+
+class IssueIdentityTests(unittest.TestCase):
+    """Independent problems must never share an identity or a repair record."""
+
+    INTERFACE_MESSAGE = (
+        "interfaces[chassis-location].kind must be one of the locator kinds "
+        "declared for self-tapping interfaces"
+    )
+    TRAVEL_MESSAGE = (
+        "installationChecks[2] retention requires 0 <= freeTravelMm < stopTravelMm"
+    )
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.intent = self.root / "intent.json"
+        self.source = self.root / "build.py"
+        self.intent.write_text('{"part":"cup"}')
+        self.source.write_text("# test source")
+
+    def authoring_issues(self, messages):
+        """Run the real authoring -> sidecar -> compile issue chain."""
+
+        self.run_number = getattr(self, "run_number", 0) + 1
+        sidecar = self.root / "source-errors.json"
+        sidecar.unlink(missing_ok=True)
+        environment = {
+            "AMAGINE3D_SOURCE_PHASE": "compile",
+            "AMAGINE3D_SOURCE_DIAGNOSTICS_PATH": str(sidecar),
+            "AMAGINE3D_COMPILE_RUN_ID": f"run-{self.run_number}",
+        }
+        with mock.patch.dict(os.environ, environment, clear=False):
+            with self.assertRaises(authoring.AuthoringError):
+                raise authoring.AuthoringError("scene", list(messages))
+        result = {"issues": []}
+        cad_compile._record_structured_issues(
+            result,
+            json.loads(sidecar.read_text(encoding="utf-8")),
+            stage="source",
+            default_code="SOURCE.EXECUTION_FAILED",
+        )
+        return result["issues"]
+
+    def repair_state(self, result, *, attempt=1):
+        result.setdefault("model", "cup")
+        result.setdefault("runId", f"run-{attempt}")
+        result.setdefault("stages", [])
+        result.setdefault("inputs", {
+            "intent": str(self.intent),
+            "source": str(self.source),
+            "workspace": str(self.root),
+        })
+        state_path = cad_compile._write_repair_state(
+            result, result_path=self.root / "result.json"
+        )
+        return json.loads(state_path.read_text(encoding="utf-8"))
+
+    def test_two_generic_authoring_failures_keep_distinct_identities(self) -> None:
+        issues = self.authoring_issues([self.INTERFACE_MESSAGE, self.TRAVEL_MESSAGE])
+        aggregated = cad_compile._aggregate_issues(issues)
+
+        self.assertEqual(len(aggregated), 2)
+        self.assertEqual(len({item["id"] for item in aggregated}), 2)
+        summary = cad_compile._agent_summary({
+            "issues": aggregated,
+            "pass": False,
+            "status": "failed",
+        })
+        self.assertEqual(
+            sorted(item["message"] for item in summary["issues"]),
+            sorted([self.INTERFACE_MESSAGE, self.TRAVEL_MESSAGE]),
+        )
+        self.assertEqual(len({item["id"] for item in summary["issues"]}), 2)
+
+    def test_repeated_failures_count_occurrences_without_collapsing_neighbours(self) -> None:
+        issues = self.authoring_issues([self.INTERFACE_MESSAGE, self.TRAVEL_MESSAGE])
+        repeated = [*issues, *issues]
+
+        aggregated = cad_compile._aggregate_issues(repeated)
+
+        self.assertEqual(len(aggregated), 2)
+        self.assertEqual(
+            sorted(item["occurrenceCount"] for item in aggregated),
+            [2, 2],
+        )
+
+    def test_located_check_identity_survives_changed_measurements(self) -> None:
+        before = {
+            "code": "AUTHORING.INVALID",
+            "severity": "error",
+            "check": "authoring",
+            "stage": "source",
+            "ruleId": "installation-retention-travel",
+            "field": "freeTravelMm",
+            "subjectId": "clip",
+            "featureId": "clip",
+            "message": self.TRAVEL_MESSAGE,
+            "actual": {"freeTravelMm": 5.0, "stopTravelMm": 1.0},
+            "expected": "0 <= freeTravelMm < stopTravelMm",
+            "repairHint": "Set freeTravelMm and stopTravelMm for clip.",
+        }
+        after = {
+            **before,
+            "message": self.TRAVEL_MESSAGE,
+            "actual": {"freeTravelMm": 9.5, "stopTravelMm": 0.25},
+        }
+
+        self.assertEqual(
+            cad_compile._issue_identity(before),
+            cad_compile._issue_identity(after),
+        )
+
+    def test_run_details_never_create_a_new_identity(self) -> None:
+        base = {
+            "code": "SOURCE.EXECUTION_FAILED",
+            "severity": "error",
+            "stage": "source",
+            "message": (
+                "Traceback (most recent call last):\n"
+                '  File "build.py", line 10, in <module>\n'
+                "    build()\n"
+                "ValueError: boom in run 3b0d4f25-1707-4cc8-92cf-6f5c28edfc93 "
+                "at 2026-10-08T10:00:00+00:00 address 0x7f00aa11 line 10"
+            ),
+        }
+        variants = [
+            {
+                **base,
+                "message": (
+                    "Traceback (most recent call last):\n"
+                    '  File "other.py", line 991, in <module>\n'
+                    "    build()\n"
+                    "ValueError: boom in run 3b0d4f25-1707-4cc8-92cf-6f5c28edfc93 "
+                    "at 2026-10-08T10:00:00+00:00 address 0x7f00aa11 line 10"
+                ),
+            },
+            {
+                **base,
+                "message": (
+                    "Traceback (most recent call last):\n"
+                    '  File "build.py", line 3, in <module>\n'
+                    "    build()\n"
+                    "ValueError: boom in run 11111111-2222-4333-8444-555555555555 "
+                    "at 2026-12-31T23:59:59+00:00 address 0x7f00bb22 line 412"
+                ),
+            },
+        ]
+        identities = {cad_compile._issue_identity(base)}
+        identities.update(cad_compile._issue_identity(item) for item in variants)
+        self.assertEqual(len(identities), 1)
+
+    def test_cause_id_still_groups_one_root_cause_across_parts(self) -> None:
+        issues = [
+            {
+                "code": "QA.ASSEMBLY_FAILED",
+                "severity": "error",
+                "check": "interface_geometry",
+                "stage": "assembly-qa",
+                "part": part,
+                "causeId": "shared-root",
+                "message": f"alignment drift on {part}",
+            }
+            for part in ("left", "right", "plate-2")
+        ]
+
+        aggregated = cad_compile._aggregate_issues(issues)
+
+        self.assertEqual(len(aggregated), 1)
+        self.assertEqual(aggregated[0]["occurrenceCount"], 3)
+        self.assertEqual(aggregated[0]["affectedParts"], ["left", "plate-2", "right"])
+
+    def test_second_failure_is_not_the_first_one_remaining(self) -> None:
+        first = self.authoring_issues([self.INTERFACE_MESSAGE])[0]
+        second = self.authoring_issues([self.TRAVEL_MESSAGE])[0]
+        first_id = cad_compile._issue_identity(first)
+        second_id = cad_compile._issue_identity(second)
+        self.assertNotEqual(first_id, second_id)
+
+        both = self.repair_state(
+            {"issues": [first, second], "stages": [{"name": "source", "status": "fail"}]},
+            attempt=1,
+        )
+        self.assertEqual(both["delta"]["identityComparable"], True)
+        self.assertEqual(
+            sorted(both["delta"]["new"]),
+            sorted([first_id, second_id]),
+        )
+
+        # The source stage failed again, so the first check was not re-evaluated:
+        # its disappearance is not evidence that it was repaired.
+        only_second = self.repair_state(
+            {"issues": [second], "stages": [{"name": "source", "status": "fail"}]},
+            attempt=2,
+        )
+        self.assertEqual(only_second["delta"]["remaining"], [second_id])
+        self.assertEqual(only_second["delta"]["resolved"], [])
+        self.assertIn(
+            first_id,
+            {item["id"] for item in only_second["blocked"]},
+        )
+
+        # A re-run of the owning stage can prove the first failure is gone.
+        reevaluated = self.repair_state(
+            {"issues": [second], "stages": [{"name": "source", "status": "pass"}]},
+            attempt=3,
+        )
+        self.assertEqual(reevaluated["delta"]["resolved"], [first_id])
+        self.assertEqual(reevaluated["delta"]["remaining"], [second_id])
+        self.assertEqual(reevaluated["delta"]["regressed"], [])
+
+    def test_identity_version_migration_never_claims_progress(self) -> None:
+        issue = self.authoring_issues([self.INTERFACE_MESSAGE])[0]
+        legacy = self.repair_state({"issues": [issue]}, attempt=1)
+        legacy_path = self.root / "cup_repair-state.json"
+        legacy.pop("issueIdentityVersion", None)
+        legacy["delta"] = {**legacy["delta"], "identityComparable": True}
+        legacy_path.write_text(json.dumps(legacy) + "\n", encoding="utf-8")
+
+        migrated = self.repair_state({"issues": [issue]}, attempt=2)
+
+        self.assertEqual(migrated["issueIdentityVersion"], cad_compile.ISSUE_IDENTITY_VERSION)
+        self.assertEqual(migrated["delta"]["identityComparable"], False)
+        for key in ("new", "newlyUnblocked", "regressed", "remaining", "resolved", "scope_changed"):
+            self.assertEqual(migrated["delta"][key], [], key)
+        self.assertEqual(migrated["knownResolvedIssueIds"], [])
+        self.assertEqual(migrated["failed"][0]["id"], cad_compile._issue_identity(issue))
+
+    def test_authoring_repair_hint_reaches_the_summary(self) -> None:
+        from cad_diagnostics import ContractIssue
+
+        structured = ContractIssue(
+            self.INTERFACE_MESSAGE,
+            rule_id="self-tapping-locator-kind",
+            field="interfaces[chassis-location].kind",
+            interface_id="chassis-location",
+            subject_id="chassis-location",
+            actual="glue-face",
+            expected=["collar-socket", "pin-socket"],
+            repair_hint=(
+                "Set interfaces[chassis-location].kind to one of "
+                "['collar-socket', 'pin-socket']; observed 'glue-face'."
+            ),
+        )
+        issue = self.authoring_issues([structured])[0]
+        summary = cad_compile._agent_summary({
+            "issues": [issue], "pass": False, "status": "failed",
+        })
+        shown = summary["issues"][0]
+
+        self.assertEqual(shown["ruleId"], "self-tapping-locator-kind")
+        self.assertEqual(shown["interfaceId"], "chassis-location")
+        self.assertEqual(shown["actual"], "glue-face")
+        self.assertEqual(shown["expected"], ["collar-socket", "pin-socket"])
+        self.assertIn("interfaces[chassis-location].kind", shown["repairHint"])
+        self.assertNotEqual(
+            shown["repairHint"],
+            cad_compile._repair_hint("INTERNAL.REPAIR_STATE_UNAVAILABLE"),
+        )
+
+        # Legacy coarse diagnostics still get authoring guidance, not the
+        # infrastructure default that tells a repairer to inspect the log.
+        legacy = self.authoring_issues([self.TRAVEL_MESSAGE])[0]
+        legacy_summary = cad_compile._agent_summary({
+            "issues": [legacy], "pass": False, "status": "failed",
+        })
+        hint = legacy_summary["issues"][0]["repairHint"]
+        self.assertIn("Agent-authored source or declaration", hint)
+        self.assertNotIn("infrastructure failure", hint)
 
 
 if __name__ == "__main__":

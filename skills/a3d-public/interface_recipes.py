@@ -39,20 +39,11 @@ class SelfTappingScrewPair:
     receiver_boss: Any
     evidence: dict[str, Any]
 
-    def bind(self, build, *, location: Location, cover_part: str, receiver_part: str,
-             clearance_feature: str, pilot_feature: str, boss_feature: str,
-             boss_mode: str) -> dict[str, Any]:
-        """Apply the three shapes atomically and return one scene fastener record.
-
-        Use on a pair returned by self_tapping_screw_pair(). The same rigid
-        location sets all geometry and its axis. Explicit boss_mode='add' adds
-        receiver material; 'observe' identifies material already in the receiver.
-        Neither mode establishes fastening strength or replaces final audits.
-        """
+    def record(self, *, location: Location, cover_part: str, receiver_part: str,
+               clearance_feature: str, pilot_feature: str, boss_feature: str) -> dict[str, Any]:
+        """Describe the same placed recipe for scene audits without editing parts."""
         if not isinstance(location, Location):
             raise InterfaceRecipeError("location must be a rigid build123d Location")
-        if boss_mode not in ("add", "observe"):
-            raise InterfaceRecipeError("boss_mode must be 'add' or 'observe'")
         if cover_part == receiver_part:
             raise InterfaceRecipeError("fastener must connect two distinct parts")
         ids = (clearance_feature, pilot_feature, boss_feature)
@@ -80,6 +71,19 @@ class SelfTappingScrewPair:
                 headRecessDepthMm=cover["head_recess_depth_mm"],
                 minimumResidualWallMm=cover["minimum_cover_land_mm"],
             )
+        return record
+
+    def bind(self, build, *, location: Location, cover_part: str, receiver_part: str,
+             clearance_feature: str, pilot_feature: str, boss_feature: str,
+             boss_mode: str) -> dict[str, Any]:
+        """Apply one placed recipe atomically; boss_mode='add' fuses the boss,
+        while 'observe' identifies existing receiver material. Final audits still
+        prove clearance, boss wall, embed and blind end; neither mode proves strength.
+        """
+        if boss_mode not in ("add", "observe"):
+            raise InterfaceRecipeError("boss_mode must be 'add' or 'observe'")
+        record = self.record(location=location, cover_part=cover_part, receiver_part=receiver_part,
+            clearance_feature=clearance_feature, pilot_feature=pilot_feature, boss_feature=boss_feature)
         with build.capture():
             boss = location * self.receiver_boss
             if boss_mode == "add":

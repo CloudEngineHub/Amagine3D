@@ -15,6 +15,7 @@ from hashlib import sha256
 import json
 import math
 from pathlib import Path
+from uuid import uuid4
 
 from build123d import Face, Plane, Shape, import_step, section
 from OCP.Bnd import Bnd_Box
@@ -90,7 +91,46 @@ def _solids(shape: Shape) -> list:
     return solids
 
 
-def measure_section(shape: Shape, plane: Plane, *, label: str | None = None) -> dict:
+def _section_preview(faces: list, plane: Plane, path: Path, label: str | None) -> dict:
+    """Render the already measured faces; display sampling never feeds measurements."""
+    from PIL import Image, ImageDraw
+    polygons = []
+    for face in faces:
+        boundaries = []
+        for wire in [face.outer_wire(), *face.inner_wires()]:
+            points = []
+            for edge in wire.order_edges():
+                # Arclength-sampled outlines are illustrative, not acceptance evidence.
+                count = max(8, min(256, math.ceil(float(edge.length) * 2)))
+                points.extend((point.X, point.Y) for point in
+                              (plane.to_local_coords(edge.position_at(i / count)) for i in range(count + 1)))
+            boundaries.append(points)
+        polygons.append(boundaries)
+    points = [point for boundaries in polygons for loop in boundaries for point in loop]
+    low = [min(point[i] for point in points) for i in range(2)] if points else [0, 0]
+    high = [max(point[i] for point in points) for i in range(2)] if points else [1, 1]
+    scale = min(720 / max(high[0] - low[0], 1e-6), 520 / max(high[1] - low[1], 1e-6))
+    def pixel(point):
+        return (40 + (point[0] - low[0]) * scale, 580 - (point[1] - low[1]) * scale)
+    image = Image.new("RGB", (800, 640), "#f4f6f8")
+    for boundaries in polygons:
+        mask = Image.new("L", image.size, 0)
+        draw = ImageDraw.Draw(mask)
+        for index, loop in enumerate(boundaries):
+            if len(loop) >= 3:
+                draw.polygon([pixel(point) for point in loop], fill=255 if index == 0 else 0)
+        image.paste("#527d9e", mask=mask)
+    draw = ImageDraw.Draw(image)
+    draw.text((24, 16), "Specified section - input-part coordinates - mm", fill="#172b3a")
+    draw.text((24, 610), "u ->    v up; sampled display only; dimensions are in the bound report", fill="#172b3a")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path, format="PNG")
+    return {"path": str(path.resolve()), "sha256": sha256(path.read_bytes()).hexdigest(),
+            "scope": "same measured faces and plane; sampled outline display, not global thickness proof"}
+
+
+def measure_section(shape: Shape, plane: Plane, *, label: str | None = None,
+                    preview: str | Path | None = None) -> dict:
     """Measure a specified plane in the final part's coordinates, in mm/mm².
 
     Each solid's positive-area section faces remain separate material islands.
@@ -98,6 +138,7 @@ def measure_section(shape: Shape, plane: Plane, *, label: str | None = None) -> 
     it is null for an empty section. A hole belongs to its particular island.
     Coplanar end faces count as sections when returned by the kernel. No plane
     offset, tolerance-based pass/fail, source station, or mesh sampling is used.
+    Optional preview writes an illustrative image from these same section faces.
     """
     if not isinstance(plane, Plane) or not all(
         math.isfinite(v) for axis in (plane.origin, plane.x_dir, plane.y_dir, plane.z_dir) for v in axis
@@ -106,6 +147,7 @@ def measure_section(shape: Shape, plane: Plane, *, label: str | None = None) -> 
     # section() may clean its input's triangulation cache; isolate the caller.
     solids = _solids(deepcopy(shape))
     islands = []
+    measured_faces = []
     for solid_index, solid in enumerate(solids):
         # build123d uses a finite cutting face. Recenter that face on the solid's
         # projection, so an equivalent plane with a distant in-plane origin
@@ -120,6 +162,7 @@ def measure_section(shape: Shape, plane: Plane, *, label: str | None = None) -> 
             area, centroid, error = _surface_properties(face)
             if area <= 0:
                 continue
+            measured_faces.append(face)
             islands.append({
                 "solid_index": solid_index,
                 "island_index": len(islands),
@@ -136,7 +179,7 @@ def measure_section(shape: Shape, plane: Plane, *, label: str | None = None) -> 
             "min": [min(box["min_uv_mm"][i] for box in boxes) for i in range(2)],
             "max": [max(box["max_uv_mm"][i] for box in boxes) for i in range(2)],
         }, plane)
-    return {
+    result = {
         "schema": "brep-section/v1", "label": label,
         "units": {"length": "mm", "area": "mm2"},
         "coordinate_frame": "input-part",
@@ -150,9 +193,13 @@ def measure_section(shape: Shape, plane: Plane, *, label: str | None = None) -> 
         "material_islands": islands,
         "notes": list(_NOTES),
     }
+    if preview is not None:
+        result["preview"] = _section_preview(measured_faces, plane, Path(preview), label)
+    return result
 
 
-def measure_step(path: str | Path, sections: Mapping[str, Plane] | None = None) -> dict:
+def measure_step(path: str | Path, sections: Mapping[str, Plane] | None = None, *,
+                 preview_dir: str | Path | None = None) -> dict:
     """Read a final STEP; bind its SHA-256, world bounds and named exact sections.
 
     ``sections={"foot": Plane.XY, "mouth": Plane.XY.offset(95)}`` preserves the
@@ -178,8 +225,9 @@ def measure_step(path: str | Path, sections: Mapping[str, Plane] | None = None) 
         "coordinate_frame": "input-part",
         "world_bounds_mm": _bounds(shape), "solid_count": len(solids),
         "sum_solid_volume_mm3": sum(float(solid.volume) for solid in solids),
-        "sections": [measure_section(shape, plane, label=label)
-                     for label, plane in (sections or {}).items()],
+        "sections": [measure_section(shape, plane, label=label,
+                     preview=Path(preview_dir) / f"section-{index}.png" if preview_dir is not None else None)
+                     for index, (label, plane) in enumerate((sections or {}).items())],
         "notes": list(_NOTES),
     }
     if sha256(path.read_bytes()).hexdigest() != input_hash:
@@ -232,6 +280,7 @@ def main(argv: list[str] | None = None) -> int:
                             metavar="MM", help=f"Repeat for exact world {axis} coordinates in mm")
     parser.add_argument("--out", type=Path,
                         help="Full report path (default: <model-stem>_measurements.json in workspace)")
+    parser.add_argument("--preview", action="store_true", help="Render only the explicitly requested sections")
     args = parser.parse_args(argv)
     try:
         workspace = args.workspace.resolve()
@@ -250,12 +299,16 @@ def main(argv: list[str] | None = None) -> int:
                 normal = {"x": (1, 0, 0), "y": (0, -1, 0), "z": (0, 0, 1)}[axis]
                 u_dir = (0, 1, 0) if axis == "x" else (1, 0, 0)
                 planes[f"{axis}={value!r}"] = Plane(origin=origin, x_dir=u_dir, z_dir=normal)
-        result = _length_report(measure_step(model, planes))
+        if args.preview and not planes:
+            raise ValueError("--preview needs at least one explicit section")
+        preview_dir = (_workspace_path(workspace, Path(".amagine3d-measurements") / str(uuid4()),
+                                        "section previews", must_exist=False) if args.preview else None)
+        result = _length_report(measure_step(model, planes, preview_dir=preview_dir))
         encoded = json.dumps(result, indent=2, allow_nan=False) + "\n"
         output.write_text(encoded, encoding="utf-8")
         fields = ("label", "plane", "status", "outer_envelope", "material_island_count",
                   "hole_count", "sum_material_area_mm2")
-        summaries = [{key: cut[key] for key in fields}
+        summaries = [{key: cut[key] for key in (*fields, "preview") if key in cut}
                      for cut in result["sections"][:_SUMMARY_SECTION_LIMIT]]
         print(json.dumps({
             "schema": "brep-measurement-summary/v1", "input": result["input"],

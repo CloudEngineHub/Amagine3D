@@ -9,6 +9,7 @@ import {
   type CadCompileProgressStatus,
   type CadSystem,
   type CodexRuntimeLike,
+  ModelIncompleteResponseError,
   ModelOutputLimitError,
   type RunOutcome,
   RunStopped,
@@ -16,6 +17,7 @@ import {
   type RuntimeEvent,
   type RuntimeItem,
   type RuntimeTaskType,
+  type TurnUsage,
 } from '@amagine3d/a3d-runtime';
 import type { Express, Response } from 'express';
 
@@ -24,13 +26,16 @@ import {
   completeChatTurn,
   emptyChatTurn,
   startChatStep,
+  turnAccounting,
 } from '../../src/lib/chat-turn.ts';
 import type {
   AgentEvent,
   ChatStep,
   ChatTurn,
+  ChatTurnAccounting,
   LocalizedText,
   PythonHealth,
+  TurnAccountingOutcome,
 } from '../../src/types.ts';
 import { errorMessage } from '../http-utils.ts';
 import { isChatRequest } from '../protocol.ts';
@@ -44,6 +49,9 @@ import {
   userSessionArtifacts,
 } from '../sessions.ts';
 import { saveImageAttachments } from '../uploads.ts';
+import { readCadRunEvidence } from '../cad-run-evidence.ts';
+import { watchCadArtifacts } from '../cad-artifact-stream.ts';
+import type { ArtifactCollection } from '../../src/types.ts';
 
 interface CompletedRun {
   replyText: string;
@@ -99,6 +107,18 @@ function localizedLabel(en: string, zh: string): LocalizedText {
 }
 
 function commandActivity(command: string): LocalizedText {
+  if (/\ba3d\s+agent\s+build\b/u.test(command)) {
+    return localizedLabel('Building and checking CAD', '正在构建并检查 CAD');
+  }
+  if (/\ba3d\s+agent\s+(context|inspect)\b/u.test(command)) {
+    return localizedLabel('Reading CAD evidence', '正在读取 CAD 状态与检查依据');
+  }
+  if (/\ba3d\s+agent\s+capabilities\b/u.test(command)) {
+    return localizedLabel('Reading CAD capabilities', '正在读取 CAD 能力');
+  }
+  if (/\ba3d\s+agent\s+validate\b/u.test(command)) {
+    return localizedLabel('Validating CAD declarations', '正在预检 CAD 声明');
+  }
   if (/\ba3d\s+compile\b/u.test(command)) {
     return localizedLabel('Compiling and validating CAD', '正在编译并检查 CAD');
   }
@@ -231,8 +251,8 @@ function completedItemActivity(
               'A3D 正在分析执行结果',
             )
         : localizedLabel(
-            'The tool failed; A3D is trying to repair the issue',
-            '工具执行未成功，A3D 正在尝试修复',
+            'The command returned a nonzero exit code',
+            '命令返回非零退出码，需结合结果判断原因',
           ),
       stage: 'reasoning',
     };
@@ -258,23 +278,43 @@ function completedItemActivity(
   return undefined;
 }
 
+/**
+ * How the attempt ended for accounting purposes. This is the model execution
+ * outcome only: a completed attempt is not evidence that CAD acceptance passed.
+ */
+function accountingOutcome(
+  outcome: RunOutcome<CompletedRun>,
+  runTurnStarted: boolean,
+): TurnAccountingOutcome {
+  if (!runTurnStarted) return 'not_started';
+  if (outcome.status === 'completed') return 'completed';
+  if (outcome.status === 'cancelled') return 'cancelled';
+  if (outcome.status === 'timed_out') return 'timed_out';
+  return 'failed';
+}
+
 function finishRunOutcome(
   outcome: RunOutcome<CompletedRun>,
   finish: (
     status: 'cancelled' | 'completed' | 'failed',
     replyText: string,
-    sourceStepId?: string,
+    sourceStepId: string | undefined,
+    accounting: ChatTurnAccounting | undefined,
   ) => ChatTurn,
+  accounting: ChatTurnAccounting | undefined,
 ): ChatTurn {
   if (outcome.status === 'completed') {
     return finish(
       'completed',
       outcome.value.replyText,
       outcome.value.sourceStepId,
+      accounting,
     );
   }
-  if (outcome.status === 'cancelled') return finish('cancelled', '');
-  return finish('failed', outcome.message);
+  if (outcome.status === 'cancelled') {
+    return finish('cancelled', '', undefined, accounting);
+  }
+  return finish('failed', outcome.message, undefined, accounting);
 }
 
 export function registerChatRoute(
@@ -357,6 +397,21 @@ export function registerChatRoute(
     let runTurn = emptyChatTurn();
     let activeResponseStepId: string | undefined;
     let lastResponseStepId: string | undefined;
+    // One slot per execution attempt: re-reported completion usage replaces the
+    // previous snapshot instead of adding a second copy to the ledger.
+    const attemptId = randomUUID();
+    let attemptUsage: TurnUsage | undefined;
+    let runTurnStarted = false;
+    let artifactStream: Awaited<ReturnType<typeof watchCadArtifacts>> | undefined;
+    let artifactSequence = 0;
+    let artifactFingerprint: string | undefined;
+    const publishArtifacts = (collection: ArtifactCollection) => {
+      if (response.destroyed || response.writableEnded) return;
+      const fingerprint = JSON.stringify(collection);
+      if (fingerprint === artifactFingerprint) return;
+      artifactFingerprint = fingerprint;
+      writeEvent(response, { ...collection, sessionId, attemptId, sequence: ++artifactSequence, type: 'artifacts' });
+    };
     const assistantItems = new Map<string, string>();
     const compileCommandsWithProgress = new Set<string>();
     const compileStageSteps = new Map<string, Map<string, string>>();
@@ -413,6 +468,11 @@ export function registerChatRoute(
     };
 
     const observeCodexEvent = (event: RuntimeEvent) => {
+      if (event.type === 'turn.completed' && event.usage) {
+        // Collected before the running check so a turn that ends right after
+        // reporting usage still keeps its counts.
+        attemptUsage = event.usage;
+      }
       if (isRuntimeProgressEvent(event)) supervisor.observeProgress();
       if (!supervisor.running) return;
       if (event.type === 'cad.compile.progress') {
@@ -476,6 +536,7 @@ export function registerChatRoute(
         return;
       }
       if (event.type === 'item.completed') {
+        if (event.item.type === 'command_execution' || event.item.type === 'mcp_tool_call' || event.item.type === 'file_change') artifactStream?.refresh(true);
         if (event.item.type === 'agent_message') {
           appendAssistantText(event.item);
           lastResponseStepId = activeResponseStepId;
@@ -502,10 +563,12 @@ export function registerChatRoute(
     const finishRun = (
       status: 'cancelled' | 'completed' | 'failed',
       replyText: string,
-      sourceStepId?: string,
+      sourceStepId: string | undefined,
+      accounting: ChatTurnAccounting | undefined,
     ): ChatTurn => {
       if (runTurn.finishedAt !== undefined) return runTurn;
       runTurn = completeChatTurn(runTurn, {
+        accounting,
         finishedAt: Date.now(),
         replyText,
         sourceStepId,
@@ -564,8 +627,15 @@ export function registerChatRoute(
         );
         return turnExecutor;
       });
-      const result = await supervisor.run((signal) =>
-        runtime.runTurn({
+      if (taskType === 'cad') {
+        artifactStream = await watchCadArtifacts(join(runtime.workspaceRoot, 'sessions', sessionId), async () => {
+          const collection = await userSessionArtifacts(runtime.workspaceRoot, sessionId);
+          if (collection && supervisor.running) publishArtifacts(collection);
+        }, () => supervisor.running && !response.destroyed);
+      }
+      const result = await supervisor.run((signal) => {
+        runTurnStarted = true;
+        return runtime.runTurn({
           cadSystem,
           imagePaths: savedImages.map(({ path }) => path),
           message,
@@ -576,8 +646,11 @@ export function registerChatRoute(
           signal,
           taskType,
           threadId,
-        }),
-      );
+        });
+      });
+      await artifactStream?.stop();
+      // The returned snapshot is the same one the completion event delivered.
+      attemptUsage ??= result.usage;
 
       startStep(
         localizedLabel('Collecting generated files', '正在整理生成文件'),
@@ -594,24 +667,25 @@ export function registerChatRoute(
           ),
           'files',
         );
-        writeEvent(response, {
-          ...artifactCollection,
-          sessionId,
-          type: 'artifacts',
-        });
+        publishArtifacts(artifactCollection);
       }
       supervisor.complete({
         replyText: result.finalResponse,
         sourceStepId: lastResponseStepId,
       });
     } catch (error) {
+      const modelFailure = error instanceof ModelOutputLimitError || error instanceof ModelIncompleteResponseError;
+      if (modelFailure && error.diagnostic) {
+        runTurn.runtimeFailure = { code: error.code, ...error.diagnostic };
+      }
       if (!(error instanceof RunStopped) && supervisor.running) {
         supervisor.fail(
-          error instanceof ModelOutputLimitError ? error.code : 'codex_error',
+          modelFailure ? error.code : 'codex_error',
           errorMessage(error),
         );
       }
     } finally {
+      await artifactStream?.stop();
       try {
         await turnExecutor?.close();
       } catch (error) {
@@ -621,6 +695,17 @@ export function registerChatRoute(
       }
       request.off('aborted', abortForDisconnect);
       response.off('close', abortForDisconnect);
+      if (taskType === 'cad' && runTurnStarted) {
+        runTurn.cadResult = await readCadRunEvidence(join(runtime.workspaceRoot, 'sessions', sessionId));
+        // CAD artifacts survive model transport failure/cancellation. Collection
+        // is independent of successful final text, and never promotes a draft.
+        if (!response.destroyed) {
+          try {
+            const collection = await userSessionArtifacts(runtime.workspaceRoot, sessionId);
+            if (collection) publishArtifacts(collection);
+          } catch { /* Preserve the actual run outcome if collection fails. */ }
+        }
+      }
       await supervisor.finalize(
         {
           code: 'codex_error',
@@ -628,7 +713,26 @@ export function registerChatRoute(
           status: 'failed',
         },
         async ({ deliver, outcome }) => {
-          const turn = finishRunOutcome(outcome, finishRun);
+          // Bookkeeping is written once per attempt, with the real outcome and
+          // whatever usage the SDK actually reported — including for failures
+          // and cancellations, which are never recorded as zero cost.
+          const accounting = turnAccounting({
+            attemptId,
+            model: runtime.modelName,
+            outcome: accountingOutcome(outcome, runTurnStarted),
+            taskType,
+            usage: attemptUsage,
+          });
+          const cad = runTurn.cadResult;
+          const message = 'message' in outcome && cad?.inputsCurrent
+            ? `${outcome.message}\n${cad.pass
+              ? 'CAD 自动检查已通过，结果仍标记为需要视觉审查；已生成文件保留。'
+              : cad.status === 'failed'
+                ? 'CAD 检查有未通过项，检查依据和已有文件已保留。'
+                : '已有草稿文件保留，尚未通过完整 CAD 检查。'}`
+            : 'message' in outcome ? outcome.message : undefined;
+          const terminalOutcome = 'message' in outcome && message ? { ...outcome, message } : outcome;
+          const turn = finishRunOutcome(terminalOutcome, finishRun, accounting);
           try {
             await appendSessionAssistantTurn(
               join(runtime.stateRoot, 'sessions'),
@@ -654,7 +758,7 @@ export function registerChatRoute(
             writeEvent(response, {
               code: outcome.code,
               finishedAt: turn.finishedAt!,
-              message: outcome.message,
+              message: message ?? outcome.message,
               type: 'error',
             });
           }

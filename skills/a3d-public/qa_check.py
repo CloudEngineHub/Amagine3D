@@ -40,7 +40,7 @@ PLACED_OPENING_KINDS = {
     "slot",
     "window",
 }
-BUILD_SCHEMA = "evidence-a3d-build/v1"
+BUILD_SCHEMA = "evidence-a3d-build/v2"
 
 
 class Audit:

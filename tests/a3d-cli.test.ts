@@ -81,7 +81,7 @@ async function createDraftEvidence(root: string): Promise<EvidenceFixture> {
     writeFile(sourcePath, 'print("draft")\n'),
     writeFile(intentPath, JSON.stringify({ part: 'model' })),
     writeFile(artifactPath, 'step bytes'),
-    writeFile(geometryPath, JSON.stringify({ schema: 'a3d-draft-geometry/v1' })),
+    writeFile(geometryPath, JSON.stringify({ schema: 'a3d-draft-geometry/v2' })),
   ]);
   await writeFile(resultPath, JSON.stringify({
     artifacts: { step: await evidenceBinding(artifactPath) },
@@ -90,7 +90,7 @@ async function createDraftEvidence(root: string): Promise<EvidenceFixture> {
     intent: await evidenceBinding(intentPath),
     result: resultPath,
     runId,
-    schema: 'a3d-draft-result/v1',
+    schema: 'a3d-draft-result/v2',
     source: await evidenceBinding(sourcePath),
     status: 'draft',
   }));
@@ -132,7 +132,7 @@ async function createCompileEvidence(root: string): Promise<EvidenceFixture> {
     inputs,
     pass: true,
     runId,
-    schema: 'evidence-a3d-build/v1',
+    schema: 'evidence-a3d-build/v2',
   }));
   await writeFile(resultPath, JSON.stringify({
     artifacts: {
@@ -148,7 +148,7 @@ async function createCompileEvidence(root: string): Promise<EvidenceFixture> {
     inputs: { scene: scenePath },
     pass: true,
     runId,
-    schema: 'evidence-cad-compile-result/v1',
+    schema: 'evidence-cad-compile-result/v2',
     status: 'awaiting-visual-review',
     visualReviewRequired: true,
   }));
@@ -184,7 +184,7 @@ async function withDiagnostics(
   const root = await mkdtemp(join(process.cwd(), '.a3d-diagnostic-budget-'));
   const file = join(root, 'result.json');
   try {
-    await writeFile(file, JSON.stringify({ schema: 'evidence-cad-compile-result/v1', issues }));
+    await writeFile(file, JSON.stringify({ schema: 'evidence-cad-compile-result/v2', issues }));
     await run(async (...args) => {
       const { stdout } = await execFileAsync(process.execPath, [A3D.pathname, 'diagnose', file, ...args], {
         cwd: root, maxBuffer: 4 * 1024 * 1024,
@@ -474,7 +474,7 @@ test('same-name extension entries cannot change public command dispatch', {
         issues: [
           { code: 'QA.EXAMPLE', id: 'example', severity: 'error', message: 'boom' },
         ],
-        schema: 'evidence-cad-compile-result/v1',
+        schema: 'evidence-cad-compile-result/v2',
       }),
     );
     const diagnose = await execFileAsync(
@@ -512,7 +512,7 @@ test('selects one persisted compile diagnostic without replaying the full result
           { code: 'QA.THIN_WALL', id: 'thin-wall', severity: 'error', message: completeCause },
           { code: 'QA.WARNING', id: 'overhang', severity: 'warning' },
         ],
-        schema: 'evidence-cad-compile-result/v1',
+        schema: 'evidence-cad-compile-result/v2',
       }),
     );
 
@@ -702,7 +702,7 @@ test('diagnose rejects sibling files and symlinks escaping the current workspace
   const sibling = join(root, 'sibling');
   const document = JSON.stringify({
     issues: [{ code: 'QA.EXAMPLE', id: 'example', severity: 'error' }],
-    schema: 'evidence-cad-compile-result/v1',
+    schema: 'evidence-cad-compile-result/v2',
   });
   try {
     await Promise.all([mkdir(current), mkdir(sibling)]);
@@ -750,7 +750,7 @@ test('diagnose works when the sandbox denies metadata access to the sessions par
     const result = join(current, 'result.json');
     await writeFile(result, JSON.stringify({
       issues: [{ code: 'QA.EXAMPLE', id: 'example', severity: 'error' }],
-      schema: 'evidence-cad-compile-result/v1',
+      schema: 'evidence-cad-compile-result/v2',
     }));
     await symlink('result.json', join(current, 'alias.json'));
 

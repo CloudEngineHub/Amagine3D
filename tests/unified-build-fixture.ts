@@ -124,7 +124,7 @@ export async function writeUnifiedBuildFixture(
       backend === 'brep-assembly' ? [`${name}-base`, `${name}-cover`] : [name],
     pass = true,
     root,
-    schema = 'evidence-a3d-build/v1',
+    schema = 'evidence-a3d-build/v2',
     sourceContent = '# parametric CAD source\n',
     plateParts,
   } = options;
@@ -300,13 +300,13 @@ export async function writeUnifiedBuildFixture(
         representationMaster: hybrid ? 'mesh' : 'brep',
       })),
       revision,
-      schema: 'evidence-semantic-scene/v1',
+      schema: 'evidence-semantic-scene/v2',
       units: 'mm',
     }),
   );
-  const display = await writeBound(`${name}-display.glb`, 'glTF-display');
+  const display = await writeBound(`${name}-display.step`, 'ISO-10303-21 display fixture');
   const artifacts: Record<string, Record<string, unknown>> = {
-    'glb:display': { ...display, coordinateFrame: 'semantic' },
+    'step:display': { ...display, coordinateFrame: 'semantic' },
   };
 
   for (const part of parts) {
@@ -361,7 +361,7 @@ export async function writeUnifiedBuildFixture(
       [
         'boundScene',
         `${name}_scene_artifacts.json`,
-        { revision, schema: 'evidence-semantic-scene/v1' },
+        { revision, schema: 'evidence-semantic-scene/v2' },
       ],
       [
         'shapeConsistency',
@@ -381,7 +381,7 @@ export async function writeUnifiedBuildFixture(
           ),
           pass: true,
           revision,
-          schema: 'evidence-shape-consistency-manifest/v1',
+          schema: 'evidence-shape-consistency-manifest/v2',
           skippedParts: [],
         },
       ],
@@ -462,7 +462,7 @@ export async function writeUnifiedBuildFixture(
       Object.entries(artifacts)
         .filter(
           ([key]) =>
-            key === 'glb:display' ||
+            key === 'step:display' ||
             key === 'stl' ||
             key.startsWith('stl:') ||
             key.startsWith('step:') ||
@@ -471,7 +471,7 @@ export async function writeUnifiedBuildFixture(
             key.startsWith('region:'),
         )
         .map(([key, artifact]) => {
-          if (key === 'glb:display') {
+          if (key === 'step:display') {
             const nodes = [`${name}-display-node`];
             return [
               key,
@@ -481,9 +481,9 @@ export async function writeUnifiedBuildFixture(
                 observed: { geometryCount: 1, nodes },
                 pass: true,
                 path: artifact.path,
-                reader: 'trimesh-gltf',
+                reader: 'build123d-occt',
                 sha256: artifact.sha256,
-                type: 'glb',
+                type: 'step',
               },
             ];
           }
@@ -516,7 +516,7 @@ export async function writeUnifiedBuildFixture(
       artifacts: audited,
       errors: [],
       pass: true,
-      schema: 'evidence-export-audit/v1',
+      schema: 'evidence-export-audit/v2',
     };
     const audit = await writeBound(
       `${name}_export-audit.json`,
@@ -538,7 +538,7 @@ export async function writeUnifiedBuildFixture(
     scene: {
       ...scene,
       revision,
-      schema: 'evidence-semantic-scene/v1',
+      schema: 'evidence-semantic-scene/v2',
     },
   };
   if (hybrid) {
@@ -675,13 +675,24 @@ export async function writeUnifiedBuildFixture(
       threeMf: threeMfEvidence,
     };
   }
+  if (!hybrid) {
+    const ref = artifacts['step:display']!;
+    const scenePath = join(root, `${name}-display.step.scene.json`);
+    const scene = JSON.stringify({ schema: 'a3d-step-display/v1', units: 'mm', step: { path: ref.path, sha256: ref.sha256 }, objects: [{
+      name: `${name}-display-node`, role: 'manufactured', coordinateFrame: 'semantic', transformApplied: true,
+      step: { path: ref.path, sha256: ref.sha256 }, appearance: { baseColor: '#6891B5', metallic: 0, roughness: 0.58 },
+      geometry: { bodyCount: 1, boundsMm: { min: [0, 0, 0], max: [1, 1, 1], size: [1, 1, 1] }, valid: true, volumeMm3: 1 },
+    }] });
+    await writeFile(scenePath, scene);
+    ref.scene = { path: scenePath, sha256: fixtureDigest(scene) };
+  }
   const report: Record<string, unknown> = {
     artifactMatrix: {
       parts: Object.fromEntries(
         parts.map((part) => [
           part,
           {
-            glb: 'required',
+            displayStep: 'required',
             step: hybrid ? 'not-applicable' : 'required',
             stl: 'required',
             threeMf: needsThreeMf ? 'required' : 'not-applicable',

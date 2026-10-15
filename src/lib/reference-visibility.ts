@@ -16,7 +16,7 @@ function previewRole(object: Object3D): PreviewRole | undefined {
     : undefined;
 }
 
-/** GLTFLoader preserves node/mesh extras as userData. Never infer roles from names or colors. */
+/** STEP preview object metadata is copied explicitly into userData. Never infer roles from names or colors. */
 export function referenceVisibility(root: Object3D): {
   info: ReferenceComponentInfo;
   setHidden: (hidden: boolean) => void;

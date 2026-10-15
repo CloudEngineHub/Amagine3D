@@ -8,7 +8,8 @@ import { scanArtifacts } from './artifacts.ts';
 
 export const BUNDLED_POMODORO_ID = 'amagine3d-pomodoro';
 export const BUNDLED_POMODORO_NAME = 'Amagine3D Pomodoro Timer';
-export const BUNDLED_POMODORO_PREVIEW = 'focus-bar-logical-assembly.3mf';
+export const BUNDLED_POMODORO_PREVIEW = 'focus-bar-logical-assembly.step';
+export const BUNDLED_POMODORO_PRINT = 'focus-bar-logical-assembly.3mf';
 
 export const BUNDLED_POMODORO_WORKSPACE: ArtifactWorkspace = {
   id: BUNDLED_POMODORO_ID,
@@ -19,10 +20,12 @@ export const BUNDLED_POMODORO_WORKSPACE: ArtifactWorkspace = {
 };
 
 function asBundledArtifact(artifact: ArtifactSummary): ArtifactSummary {
+  const print = artifact.name === BUNDLED_POMODORO_PRINT;
   return {
     ...artifact,
     featured: artifact.name === BUNDLED_POMODORO_PREVIEW,
-    primary: artifact.name === BUNDLED_POMODORO_PREVIEW,
+    primary: artifact.name === BUNDLED_POMODORO_PREVIEW || print,
+    purpose: artifact.name === BUNDLED_POMODORO_PREVIEW ? 'display-preview' : print ? 'print-package' : 'unclassified',
     readOnly: true,
     url: `/api/bundled-artifacts/file?path=${encodeURIComponent(artifact.path)}`,
   };

@@ -8,6 +8,12 @@ draft, and never rewrite targets merely to match a generated artifact.
 
 ## Required structure
 
+For DSL assemblies, use the complete
+`$AMAGINE3D_SKILL_DIR/examples/installed_module_intent.json` structure after the
+functional draft. It declares features, owners, screw/locator endpoints, component
+checks, colors and a profile binding; its fixture targets remain independent of
+geometry controls. Python authoring examples are unnecessary for a JSON intent.
+
 ```json
 {
   "schema": "evidence-cad-intent/v5",

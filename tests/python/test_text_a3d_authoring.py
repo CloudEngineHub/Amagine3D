@@ -238,6 +238,49 @@ class AuthoringTests(unittest.TestCase):
             self.assertTrue(all("observed" in issue and "expected" in issue for issue in diagnostics["issues"]))
             self.assertNotIn("NaN", sidecar.read_text())
 
+    def test_structured_contract_errors_keep_their_rule_through_the_sidecar(self):
+        from cad_diagnostics import ContractIssue
+
+        structured = ContractIssue(
+            "installationChecks[2] retention requires 0 <= freeTravelMm < stopTravelMm",
+            rule_id="installation-retention-travel",
+            field="freeTravelMm",
+            subject_id="clip",
+            feature_id="clip",
+            actual={"freeTravelMm": 5.0, "stopTravelMm": 1.0},
+            expected="0 <= freeTravelMm < stopTravelMm",
+            repair_hint="Set freeTravelMm < stopTravelMm for clip.",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            sidecar = Path(directory) / "source-errors.json"
+            environment = {
+                "AMAGINE3D_SOURCE_PHASE": "compile",
+                "AMAGINE3D_SOURCE_DIAGNOSTICS_PATH": str(sidecar),
+                "AMAGINE3D_COMPILE_RUN_ID": "test-run",
+            }
+            with patch.dict("os.environ", environment, clear=False):
+                with self.assertRaises(authoring.AuthoringError) as failure:
+                    raise authoring.AuthoringError(
+                        "scene",
+                        [structured, "parts must exactly match immutable intent ownership"],
+                    )
+            issues = json.loads(sidecar.read_text())["issues"]
+
+        self.assertEqual(issues[0]["ruleId"], "installation-retention-travel")
+        self.assertEqual(issues[0]["field"], "freeTravelMm")
+        self.assertEqual(issues[0]["featureId"], "clip")
+        self.assertEqual(issues[0]["actual"], {"freeTravelMm": 5.0, "stopTravelMm": 1.0})
+        self.assertEqual(issues[0]["observed"], {"freeTravelMm": 5.0, "stopTravelMm": 1.0})
+        self.assertEqual(issues[0]["expected"], "0 <= freeTravelMm < stopTravelMm")
+        self.assertEqual(issues[0]["repairHint"], "Set freeTravelMm < stopTravelMm for clip.")
+        self.assertEqual(issues[0]["check"], "authoring")
+        self.assertEqual(issues[0]["severity"], "error")
+        # The legacy coarse record keeps its document-root location and remains a
+        # different problem from the structured one.
+        self.assertEqual(issues[1]["path"], "scene")
+        self.assertNotIn("ruleId", issues[1])
+        self.assertEqual(failure.exception.issues[0]["ruleId"], "installation-retention-travel")
+
     def test_surface_contact_writes_a_valid_scene_without_insertion_depth(self):
         import interface_geometry
         with tempfile.TemporaryDirectory() as directory:
@@ -569,7 +612,7 @@ class AuthoringTests(unittest.TestCase):
                 },
             )
 
-            self.assertEqual(scene["schema"], "evidence-semantic-scene/v1")
+            self.assertEqual(scene["schema"], "evidence-semantic-scene/v2")
             self.assertEqual(scene["units"], "mm")
             self.assertEqual(scene["coordinateSystem"], {"handedness": "right", "up": "Z"})
             self.assertEqual(scene["nodes"][0]["partId"], "device")

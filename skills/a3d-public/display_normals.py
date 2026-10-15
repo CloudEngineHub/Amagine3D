@@ -11,12 +11,18 @@ import trimesh
 CREASE_ANGLE_DEGREES = 30.0
 
 
+class DisplayNormalsError(ValueError):
+    def __init__(self, message, **details):
+        super().__init__(message)
+        self.issue = {"code": "DISPLAY.NORMALS_INVALID", "message": message, **details}
+
+
 def shading_normals(
     mesh: trimesh.Trimesh, *, use_existing: bool = False
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return unit normals and per-face normal indices without moving vertices.
 
-    glTF importers store explicitly authored NORMAL data in trimesh's cache.
+    Derived display meshes store explicitly authored normals in trimesh's cache.
     Read that cache without invoking vertex_normals, which would silently
     generate normals averaged across every shared edge.
     """
@@ -60,6 +66,38 @@ def shading_normals(
     normals = trimesh.geometry.weighted_vertex_normals(
         int(labels.max()) + 1, normal_faces, mesh.face_normals, mesh.face_angles
     )
+    lengths = np.linalg.norm(normals, axis=1)
+    invalid = ~np.isfinite(normals).all(axis=1) | (lengths <= 1e-12)
+    if invalid.any():
+        # Almost collinear corner angles can round to zero. Use the largest
+        # valid incident triangle in the same crease-connected normal group.
+        face_ids = np.repeat(np.arange(len(faces)), 3)
+        triangles = np.asarray(mesh.vertices, dtype=np.float64)[faces]
+        first_edge, second_edge = triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]
+        # trimesh zeroes face normals below its area threshold. Rescale the
+        # edges before crossing so nonzero slivers retain their true direction.
+        # Exactly collinear/zero-area faces remain invalid.
+        scale = np.maximum(np.max(np.abs(first_edge), axis=1), np.max(np.abs(second_edge), axis=1))
+        safe_scale = np.where(scale > 0, scale, 1.0)
+        face_normals = np.cross(first_edge / safe_scale[:, None], second_edge / safe_scale[:, None])
+        face_lengths = np.linalg.norm(face_normals, axis=1)
+        valid_faces = np.isfinite(face_normals).all(axis=1) & (face_lengths > 0)
+        candidates = np.flatnonzero(valid_faces[face_ids])
+        ordered = candidates[np.lexsort((-mesh.area_faces[face_ids[candidates]], labels[candidates]))]
+        group_ids, first = np.unique(labels[ordered], return_index=True)
+        for group, corner in zip(group_ids, ordered[first]):
+            if invalid[group]: normals[group] = face_normals[face_ids[corner]] / face_lengths[face_ids[corner]]
+        lengths = np.linalg.norm(normals, axis=1)
+        invalid = ~np.isfinite(normals).all(axis=1) | (lengths <= 1e-12)
+        if invalid.any():
+            bad_faces = np.flatnonzero(invalid[normal_faces].any(axis=1))
+            bad_vertices = np.unique(faces[bad_faces])
+            points = np.asarray(mesh.vertices)[bad_vertices]
+            raise DisplayNormalsError("display corners have no valid incident face normal", faceIndices=bad_faces[:32].tolist(),
+                vertexIndices=bad_vertices[:32].tolist(), invalidNormalCount=int(invalid.sum()),
+                boundsMm={"min": points.min(axis=0).tolist(), "max": points.max(axis=0).tolist()},
+                coordinateFrame="semantic-assembly", transform=np.eye(4).tolist())
+    normals = normals / np.linalg.norm(normals, axis=1)[:, None]
     return normals, normal_faces
 
 

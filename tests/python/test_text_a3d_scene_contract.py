@@ -50,7 +50,7 @@ def _geometry_recipe(
 
 def _scene(root: Path) -> dict:
     scene = {
-        "schema": "evidence-semantic-scene/v1",
+        "schema": "evidence-semantic-scene/v2",
         "revision": "rev-001",
         "units": "mm",
         "coordinateSystem": {"handedness": "right", "up": "Z"},
@@ -97,7 +97,7 @@ def _scene(root: Path) -> dict:
                 "recipe": {
                     "kind": "displayComponent",
                     "parameters": {
-                        "sourceMesh": "guide-appearance.ply",
+                        "sourceStep": "guide-appearance.step",
                         "appearance": {
                             "baseColor": "#111417",
                             "metallic": 0.0,
@@ -296,7 +296,7 @@ def _self_tapping_scene(root: Path) -> dict:
             },
         })
     scene = {
-        "schema": "evidence-semantic-scene/v1",
+        "schema": "evidence-semantic-scene/v2",
         "revision": "rev-fastener-001",
         "units": "mm",
         "coordinateSystem": {"handedness": "right", "up": "Z"},
@@ -535,7 +535,7 @@ class SemanticSceneContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             scene = {
-                "schema": "evidence-semantic-scene/v1",
+                "schema": "evidence-semantic-scene/v2",
                 "revision": "single-part-001",
                 "units": "mm",
                 "coordinateSystem": {"handedness": "right", "up": "Z"},
@@ -640,11 +640,11 @@ class SemanticSceneContractTests(unittest.TestCase):
             errors = scene_contract.validate(data, root)
             text = "\n".join(errors)
             self.assertIn("physicalFeatureRef is required", text)
-            self.assertIn("sourceMesh is required", text)
+            self.assertIn("sourceStep is required", text)
             self.assertIn("appearance is required", text)
 
             display["physicalFeatureRef"] = "base-shell"
-            display["recipe"]["parameters"]["sourceMesh"] = "screen-plane.ply"
+            display["recipe"]["parameters"]["sourceStep"] = "screen-plane.step"
             display["recipe"]["parameters"]["appearance"] = {
                 "baseColor": "#111417"
             }
@@ -667,8 +667,8 @@ class SemanticSceneContractTests(unittest.TestCase):
             root = Path(directory)
             data = _scene(root)
             data["parts"][0]["artifacts"] = {
-                "physicalGlb": {
-                    "path": "device.glb",
+                "masterStep": {
+                    "path": "device.step",
                     "revision": "rev-001",
                     "scale": 1.0,
                     "toCanonicalTransform": [
@@ -809,6 +809,27 @@ class SemanticSceneContractTests(unittest.TestCase):
             self.assertIn("must be a unit vector", text)
             self.assertIn("instead of declaring an independent axis", text)
             self.assertIn("must bind the shared recipe output", text)
+
+    def test_locator_kind_error_names_the_rule_field_and_allowed_kinds(self):
+        from cad_diagnostics import contract_issue
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = _self_tapping_scene(root)
+            data["interfaces"][1]["kind"] = "glue-face"
+            errors = scene_contract.validate(data, root)
+            issue = contract_issue(next(e for e in errors if "locator kinds" in e))
+
+        self.assertIsNotNone(issue)
+        self.assertEqual(issue["ruleId"], "self-tapping-locator-kind")
+        self.assertEqual(issue["interfaceId"], "housing-base-locator")
+        self.assertEqual(issue["subjectId"], "housing-base-locator")
+        self.assertEqual(issue["field"], "interfaces[housing-base-locator].kind")
+        self.assertEqual(issue["actual"], "glue-face")
+        self.assertEqual(issue["expected"], ["collar-socket", "pin-socket"])
+        self.assertIn("interfaces[housing-base-locator].kind", issue["repairHint"])
+        self.assertIn("'glue-face'", issue["repairHint"])
+        self.assertIn("collar-socket", issue["repairHint"])
 
     def test_self_tapping_locator_cannot_reuse_a_screw_feature(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -952,42 +973,18 @@ class ShapeConsistencyTests(unittest.TestCase):
                 shape_consistency._emit_report(report, output)
             self.assertEqual(json.loads(output.read_text(encoding="utf-8")), report)
 
-    def _write_physical_glb(self, path: Path, body: trimesh.Trimesh) -> None:
-        scene = trimesh.Scene()
-        scene.add_geometry(body.copy(), node_name="base-shell", geom_name="body")
-        display = trimesh.creation.box(extents=[2, 2, 2])
-        display.apply_translation([30, 0, 0])
-        scene.add_geometry(
-            display,
-            node_name="guide-appearance",
-            geom_name="display-decoration",
-        )
-        payload = scene.export(file_type="glb")
-        self.assertIsInstance(payload, bytes)
-        path.write_bytes(payload)
-
-    def test_manifest_selects_physical_glb_nodes_and_matches_stl(self):
+    def test_manifest_reads_independent_step_and_matches_stl(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             body = trimesh.creation.box(extents=[10, 8, 6])
-            glb = root / "device.glb"
             stl = root / "base.stl"
             step = root / "base.step"
-            self._write_physical_glb(glb, body)
             body.export(stl)
-            step.write_text(
-                "ISO-10303-21;\nHEADER;\nENDSEC;\nDATA;\nENDSEC;\nEND-ISO-10303-21;\n",
-                encoding="ascii",
-            )
+            from build123d import Box, export_step
+            export_step(Box(10, 8, 6), step)
 
             data = _scene(root)
             data["parts"][0]["artifacts"] = {
-                "physicalGlb": {
-                    "path": glb.name,
-                    "nodeNames": ["base-shell"],
-                    "revision": "rev-001",
-                    "scale": 1.0,
-                },
                 "manufacturingStl": {
                     "path": stl.name,
                     "revision": "rev-001",
@@ -1057,10 +1054,9 @@ class ShapeConsistencyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             y_up = trimesh.creation.box(extents=[10, 6, 8])
-            glb = root / "y-up.glb"
-            scene = trimesh.Scene()
-            scene.add_geometry(y_up, node_name="base-shell", geom_name="body")
-            glb.write_bytes(scene.export(file_type="glb"))
+            from build123d import Box, export_step
+            step = root / "y-up.step"
+            export_step(Box(10, 6, 8), step)
 
             z_up = y_up.copy()
             transform = np.asarray(
@@ -1078,8 +1074,7 @@ class ShapeConsistencyTests(unittest.TestCase):
 
             mesh_a = shape_consistency.load_artifact(
                 {
-                    "path": glb.name,
-                    "nodeNames": ["base-shell"],
+                    "path": step.name,
                     "toCanonicalTransform": transform.tolist(),
                 },
                 root,

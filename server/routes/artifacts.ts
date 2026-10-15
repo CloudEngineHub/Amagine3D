@@ -7,6 +7,7 @@ import {
   createReadStream,
   resolveArtifactPath,
 } from '../artifacts.ts';
+import { createStepPreview } from '../step-preview.ts';
 import { sessionWorkspaceRoot } from '../sessions.ts';
 import {
   artifactArchiveInputSchema,
@@ -23,6 +24,27 @@ export function registerArtifactRoutes(
   app: Express,
   paths: ArtifactRoutePaths,
 ): void {
+  const preview = async (root: string | undefined, path: string, sha: unknown, response: import('express').Response) => {
+    if (!root || (sha !== undefined && (typeof sha !== 'string' || !/^[a-f0-9]{64}$/u.test(sha)))) {
+      response.status(400).json({ message: 'Invalid STEP preview request.' }); return;
+    }
+    try {
+      const bytes = await createStepPreview(root, path, sha as string | undefined);
+      if (!response.destroyed) response.set('Cache-Control', 'no-store').type('application/json').send(bytes);
+    } catch (error) {
+      if (!response.destroyed) response.status(422).json({ message: error instanceof Error ? error.message : 'STEP preview failed.' });
+    }
+  };
+  app.get('/api/sessions/:sessionId/artifacts/step-preview', async (request, response) => {
+    const input = artifactFileInputSchema.safeParse({ path: request.query.path, sessionId: request.params.sessionId });
+    if (!input.success) { response.status(400).json({ message: 'A valid STEP artifact is required.' }); return; }
+    await preview(sessionWorkspaceRoot(paths.workspaceRoot, input.data.sessionId), input.data.path, request.query.sha256, response);
+  });
+  app.get('/api/bundled-artifacts/step-preview', async (request, response) => {
+    const input = bundledArtifactFileInputSchema.safeParse({ path: request.query.path });
+    if (!input.success) { response.status(400).json({ message: 'A valid STEP artifact is required.' }); return; }
+    await preview(paths.bundledPomodoroRoot, input.data.path, request.query.sha256, response);
+  });
   app.get('/api/sessions/:sessionId/artifacts/file', async (request, response) => {
     const input = artifactFileInputSchema.safeParse({
       path: request.query.path,

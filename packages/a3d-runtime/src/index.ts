@@ -11,8 +11,11 @@ export {
 } from './cad-systems.ts';
 export {
   isRuntimeProgressEvent,
+  normalizeTurnUsage,
+  TURN_USAGE_FIELDS,
   type RuntimeEvent,
   type RuntimeItem,
+  type TurnUsage,
 } from './events.ts';
 export type { CadCompileProgressStatus } from './compile-progress.ts';
 export {
@@ -38,6 +41,7 @@ export {
   codexPrompt,
   codexReasoningEffort,
   CodexRuntime,
+  ModelIncompleteResponseError,
   ModelOutputLimitError,
   type CodexRuntimeLike,
   type CodexTurnRequest,

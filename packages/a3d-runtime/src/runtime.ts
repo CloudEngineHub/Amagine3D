@@ -17,7 +17,11 @@ import {
   type CadSystem,
 } from './cad-systems.ts';
 import { CompileProgressExtractor } from './compile-progress.ts';
-import { normalizeThreadEvent, type RuntimeEvent } from './events.ts';
+import {
+  normalizeThreadEvent,
+  type RuntimeEvent,
+  type TurnUsage,
+} from './events.ts';
 import { createTavilySearchBroker } from './tavily-search-broker.ts';
 
 export type RuntimeSearchBackend = 'codex-hosted' | 'disabled' | 'tavily';
@@ -43,16 +47,30 @@ export interface CodexTurnRequest {
 export interface CodexTurnResult {
   finalResponse: string;
   threadId: string;
+  /**
+   * The same SDK-reported turn usage already delivered as a `turn.completed`
+   * event. Present only when the SDK reported counts for this turn.
+   */
+  usage?: TurnUsage;
 }
 
 export class ModelOutputLimitError extends Error {
   readonly code = 'model_output_limit';
 
-  constructor() {
+  constructor(readonly diagnostic?: { eventIndex: number; threadId?: string; completionSeen: boolean }) {
     super(
       '模型输出达到 max_output_tokens 上限；本轮不完整，未接受随后返回的摘要或部分回复。',
     );
     this.name = 'ModelOutputLimitError';
+  }
+}
+
+export class ModelIncompleteResponseError extends Error {
+  readonly code = 'model_incomplete_response';
+
+  constructor(readonly diagnostic: { eventIndex: number; threadId: string; completionSeen: boolean }) {
+    super('模型运行已结束，但没有有效的最终回复；本轮未完成。');
+    this.name = 'ModelIncompleteResponseError';
   }
 }
 
@@ -151,11 +169,12 @@ export function codexPrompt(
   const taskInstruction =
     taskType === 'cad'
       ? [
-          '这是一个 CAD 任务。直接在当前会话目录完成它；先运行一次 `a3d help`，再读取环境变量 `$AMAGINE3D_SKILL_DIR` 指向的确切 `SKILL.md` 一次。不要搜索或读取 cwd、用户目录或全局 skills 中的同名文件；任务分类、阶段顺序、reference 路由和重复动作条件以该项目 skill 为准。',
-          '在重复 draft、compile、diagnose 字段读取或 guidance 加载前，应用 `SKILL.md` 的 progress invariant；不要用相同状态重放替代建模判断。',
+          '这是一个 CAD 任务。首次初始化运行 `a3d help`，读取环境变量 `$AMAGINE3D_SKILL_DIR` 指向的确切 `SKILL.md` 一次。不要搜索或读取 cwd、用户目录或全局 skills 中的同名文件；任务分类、阶段顺序、reference 路由以该项目 skill 为准。恢复已有会话或压缩后先用 `a3d agent context`；已初始化就不要重复 help/skill。优先用 `a3d agent design/capabilities/build/inspect/validate`，参数为一个 JSON 对象，也可用 --args-file 读取当前工作区的 JSON 文件。受支持的建模操作使用参数化设计和批量局部编辑，保留可编辑 .a3d.json；电子外壳的定位环、螺钉配对和安装声明已有受控 DSL 适配器；回退 Python 前说明具体缺失操作或绑定，不以产品类别决定模式。',
+          '首稿先确定外形、内腔、组件占位和功能路径，只读所需合同。功能骨架稳定后立即声明独立 intent，用 validate 检查 design/revision/intent 并首次 compile；检查安装、紧固后再细化外观。apply 返回的 revision 用于下一次 build。恢复时直接消费 context.nextAction、context.nextInspect 和 context.nextDesignRead，复用同版本 capabilityReports；仅精读缺失字段并跟随 page.nextRequest。',
+          '外观调整必须保留冻结 intent 的尺寸和功能目标；最终逐项核对文字验收与实际控制值。安装 witness 必须由原组件包络和完整实际路径推导，不通过缩小见证消除碰撞。',
           '项目 CLI 的 evidence gate 只拒绝已有完整成功证据且 source/intent/scene/profile 字节完全相同的 draft 或 compile。遇到 `a3d-admission-rejection/v1` 时读取 matchedResult，或实质修改输入后再运行；缺失、不完整或失败证据仍可重试，门控不决定阶段、几何、拓扑或修复策略。',
-          '用原生 view_image 读取最新五视图预览。根据实际看到的轮廓、比例、特征尺度、布局和功能关系给出反馈并修改对应参数；无法识别时说明视觉审查未完成，不要用颜色统计冒充看图。',
-          '打印方向、支撑、桥接和免支撑结论必须引用当前 compile 的 `printOrientationEvidence` 与 mesh audit；其中的 rotateDegreesXYZ 才是 STL/3MF 的实际语义旋转。`rotated_xy_90deg=false` 只表示排版时没有额外床面 XY 四分之一转，不能覆盖 selected pose 或机器 warning。',
+          '用原生 view_image 读取最新五视图预览，根据实际形态、布局和功能关系修改对应参数，并用绑定报告的 agent checkpoint 保存简短观察和待办。无法识别时保留视觉审查未完成状态。若 CAD STEP 阶段通过而显示失败，先检查局部问题并用 agent display 单独重试预览，避免为法线错误改变制造几何。',
+          '未经风险位置的专项 BRep/剖面检查，不把薄壁警告判为采样伪差。打印方向、支撑、桥接和免支撑结论必须引用当前 compile 的 `printOrientationEvidence` 与 mesh audit；其中的 rotateDegreesXYZ 才是 STL/3MF 的实际语义旋转。`rotated_xy_90deg=false` 只表示排版时没有额外床面 XY 四分之一转，不能覆盖 selected pose 或机器 warning。',
           '最终回复前读取本轮最新 `*_compile-result.json`，如实保留其中的 `status` 和 `visualReviewRequired`。可以报告实际完成的视觉审查及其范围，但这不改变编译器原始状态，也不证明制造或交付就绪；`pass=true` 只代表自动检查通过，不得据此声称可交付。',
           '在每个主要阶段或耗时工具调用前，用一句简短中文说明当前目标；只描述用户可理解的工作，不复述 shell 命令或内部推理。',
           '不要为了查询 API 主动阅读 `cad_helpers.py` 等内部实现；先使用公开 `a3d` 帮助、guide 或 capability。只有公开接口和具体报错仍不足以定位问题时，才检查最小范围的内部源码。',
@@ -468,56 +487,84 @@ export class CodexRuntime implements CodexRuntimeLike {
     let finalResponse = '';
     let lastRuntimeError = '';
     let outputLimitReached = false;
+    let outputLimitEventIndex = -1;
+    let eventIndex = 0;
     let turnCompleted = false;
+    let turnUsage: TurnUsage | undefined;
     let threadId = request.threadId;
     const compileProgress = new CompileProgressExtractor();
-    for await (const event of events) {
-      if (event.type === 'thread.started') {
-        threadId = event.thread_id;
-        await request.onThreadStarted?.(event.thread_id);
-      }
-      if (
-        event.type === 'item.completed' &&
-        event.item.type === 'agent_message'
-      ) {
-        finalResponse = event.item.text;
-      }
-      const normalized = normalizeThreadEvent(event);
-      const progressEvents = compileProgress.extract(event).map(
-        (progress): RuntimeEvent => ({
-          ...progress,
-          type: 'cad.compile.progress',
-        }),
-      );
-      if (event.type === 'item.started') {
-        await request.onEvent?.(normalized);
-        for (const progress of progressEvents) {
-          await request.onEvent?.(progress);
+    try {
+      for await (const event of events) {
+        eventIndex += 1;
+        if (event.type === 'thread.started') {
+          threadId = event.thread_id;
+          await request.onThreadStarted?.(event.thread_id);
         }
-      } else {
-        for (const progress of progressEvents) {
-          await request.onEvent?.(progress);
+        const normalized = normalizeThreadEvent(event);
+        if (normalized.type === 'item.completed' && normalized.item.type === 'agent_message') {
+          finalResponse = normalized.item.phase === 'commentary' ? '' : normalized.item.text;
+        } else if ('item' in normalized && normalized.item.type !== 'todo_list') {
+          // Without phase, later work makes an earlier message a progress
+          // update. Only a subsequent completed message can be the final reply.
+          finalResponse = '';
         }
-        await request.onEvent?.(normalized);
+        if (normalized.type === 'turn.completed' && normalized.usage) {
+          // The event and the returned result expose one snapshot; keep the last
+          // report for the turn rather than accumulating a second copy.
+          turnUsage = normalized.usage;
+        }
+        const progressEvents = compileProgress.extract(event).map(
+          (progress): RuntimeEvent => ({
+            ...progress,
+            type: 'cad.compile.progress',
+          }),
+        );
+        if (event.type === 'item.started') {
+          await request.onEvent?.(normalized);
+          for (const progress of progressEvents) {
+            await request.onEvent?.(progress);
+          }
+        } else {
+          for (const progress of progressEvents) {
+            await request.onEvent?.(progress);
+          }
+          await request.onEvent?.(normalized);
+        }
+        if (event.type === 'turn.completed') turnCompleted = true;
+        if (event.type === 'turn.failed') throw new Error(event.error.message);
+        if (event.type === 'error') {
+          lastRuntimeError = event.message;
+          if (!outputLimitReached && MAX_OUTPUT_TOKENS_ERROR.test(event.message)) {
+            outputLimitReached = true;
+            outputLimitEventIndex = eventIndex;
+          }
+        }
       }
-      if (event.type === 'turn.completed') turnCompleted = true;
-      if (event.type === 'turn.failed') throw new Error(event.error.message);
-      if (event.type === 'error') {
-        lastRuntimeError = event.message;
-        outputLimitReached ||= MAX_OUTPUT_TOKENS_ERROR.test(event.message);
-      }
+    } catch (error) {
+      if (outputLimitReached) throw new ModelOutputLimitError({
+        eventIndex: outputLimitEventIndex, threadId: threadId ?? thread.id ?? undefined, completionSeen: turnCompleted,
+      });
+      throw error;
     }
     const resolvedThreadId = threadId || thread.id;
     if (!resolvedThreadId) throw new Error('A3D runtime did not return a thread id.');
-    if (outputLimitReached) throw new ModelOutputLimitError();
+    if (outputLimitReached) throw new ModelOutputLimitError({
+      eventIndex: outputLimitEventIndex, threadId: resolvedThreadId, completionSeen: turnCompleted,
+    });
     if (!turnCompleted) {
       throw new Error(
         lastRuntimeError || 'A3D response stream ended before turn completion.',
       );
     }
     if (!finalResponse.trim()) {
-      throw new Error(lastRuntimeError || 'A3D did not return a final response.');
+      throw new ModelIncompleteResponseError({
+        eventIndex, threadId: resolvedThreadId, completionSeen: turnCompleted,
+      });
     }
-    return { finalResponse, threadId: resolvedThreadId };
+    return {
+      finalResponse,
+      threadId: resolvedThreadId,
+      ...(turnUsage ? { usage: turnUsage } : {}),
+    };
   }
 }

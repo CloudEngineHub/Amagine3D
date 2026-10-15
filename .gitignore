@@ -4,6 +4,7 @@ dist/
 .amagine-state/
 .claude/
 .agent/
+.a3d-agent/
 plan/
 workspace/*
 !workspace/.gitkeep
@@ -14,4 +15,3 @@ coverage/
 __pycache__/
 *.py[cod]
 .DS_Store
-

@@ -1,6 +1,6 @@
 import type { ArtifactSummary } from '../types';
 
-const DISPLAY_PREVIEW_FORMATS = new Set(['glb']);
+const DISPLAY_PREVIEW_FORMATS = new Set(['step']);
 const PRINT_PREVIEW_FORMATS = new Set(['3mf', 'stl']);
 const CURRENT_PREVIEW_FORMATS = new Set([
   ...DISPLAY_PREVIEW_FORMATS,
@@ -12,6 +12,23 @@ function modifiedTime(artifact: ArtifactSummary): number {
   return Number.isFinite(value) ? value : 0;
 }
 
+/** Only declared build outputs and explicitly featured bundled models auto-open. */
+export function automaticPreviewEligible(artifact: ArtifactSummary): boolean {
+  if (artifact.purpose === 'internal-evidence') return false;
+  if (artifact.purpose === 'unclassified' && !artifact.primary && !artifact.featured) return false;
+  return artifact.kind === 'model' && Boolean(
+    artifact.primary || artifact.featured ||
+    ['display-preview', 'draft-preview', 'diagnostic-preview', 'print-package'].includes(artifact.purpose ?? ''),
+  );
+}
+
+export function printableArtifact(artifact: ArtifactSummary): boolean {
+  return automaticPreviewEligible(artifact) &&
+    artifact.status !== 'draft' && artifact.status !== 'diagnostic' && artifact.status !== 'failed' &&
+    (artifact.purpose === undefined || artifact.purpose === 'print-package') &&
+    PRINT_PREVIEW_FORMATS.has(artifact.format ?? '');
+}
+
 /**
  * Choose the display model produced by the latest CAD build.
  */
@@ -21,16 +38,20 @@ export function preferredDisplayPreviewArtifact(
   return artifacts
     .filter(
       (artifact) =>
-        artifact.kind === 'model' &&
+        automaticPreviewEligible(artifact) &&
         artifact.format !== undefined &&
         DISPLAY_PREVIEW_FORMATS.has(artifact.format),
     )
     .sort(
       (left, right) =>
+        Number(right.inputsCurrent !== false) - Number(left.inputsCurrent !== false) ||
+        (left.buildId && left.buildId === right.buildId
+          ? Number(right.purpose !== 'cad-model') - Number(left.purpose !== 'cad-model') : 0) ||
+        modifiedTime(right) - modifiedTime(left) ||
         Number(Boolean(right.featured)) - Number(Boolean(left.featured)) ||
         Number(Boolean(right.primary)) - Number(Boolean(left.primary)) ||
-        Number(right.path.endsWith('-display.glb')) -
-          Number(left.path.endsWith('-display.glb')) ||
+        Number(right.path.endsWith('-display.step')) -
+          Number(left.path.endsWith('-display.step')) ||
         modifiedTime(right) - modifiedTime(left) ||
         left.path.localeCompare(right.path),
     )[0];
@@ -43,12 +64,13 @@ export function preferredPrintPreviewArtifact(
   return artifacts
     .filter(
       (artifact) =>
-        artifact.kind === 'model' &&
+        printableArtifact(artifact) &&
         artifact.format !== undefined &&
         PRINT_PREVIEW_FORMATS.has(artifact.format),
     )
     .sort(
       (left, right) =>
+        Number(right.inputsCurrent !== false) - Number(left.inputsCurrent !== false) ||
         Number(Boolean(right.featured)) - Number(Boolean(left.featured)) ||
         Number(Boolean(right.primary)) - Number(Boolean(left.primary)) ||
         (left.buildId && left.buildId === right.buildId && left.plateId && right.plateId
@@ -65,8 +87,10 @@ export function printPreviewForSelection(
   selected: ArtifactSummary | undefined,
   model: { primaryPreviewPath: string } | undefined,
 ): ArtifactSummary | undefined {
-  if (selected?.kind === 'model' && (selected.format === '3mf' || selected.format === 'stl')) return selected;
-  return artifacts.find(({ path }) => path === model?.primaryPreviewPath) ?? preferredPrintPreviewArtifact(artifacts);
+  if (selected && printableArtifact(selected)) return selected;
+  if (selected?.status === 'draft' || selected?.status === 'diagnostic' || selected?.status === 'failed') return undefined;
+  if (selected?.buildId && !model) return preferredPrintPreviewArtifact(artifacts.filter((artifact) => artifact.buildId === selected.buildId));
+  return artifacts.find((artifact) => artifact.path === model?.primaryPreviewPath && printableArtifact(artifact)) ?? preferredPrintPreviewArtifact(artifacts);
 }
 
 export function defaultPreviewArtifact(
@@ -80,7 +104,7 @@ export function defaultPreviewArtifact(
 
 function isPreviewModel(artifact: ArtifactSummary): boolean {
   return (
-    artifact.kind === 'model' &&
+    automaticPreviewEligible(artifact) &&
     artifact.format !== undefined &&
     CURRENT_PREVIEW_FORMATS.has(artifact.format)
   );
@@ -102,13 +126,15 @@ export function fileSectionArtifacts(
     .map((artifact, index) => ({ artifact, index }))
     .filter(
       ({ artifact }) =>
-        isPreviewModel(artifact) && artifact.primary === true,
+        (artifact.primary === true && (isPreviewModel(artifact) || artifact.purpose === 'cad-model' || artifact.kind === 'image')) ||
+        (artifact.legacy === true && artifact.kind === 'other'),
     )
     .sort(
       (left, right) =>
         (groups.get(groupKey(left.artifact)) ?? 0) - (groups.get(groupKey(right.artifact)) ?? 0) ||
         Number(right.artifact.path === preferredPath) -
           Number(left.artifact.path === preferredPath) ||
+        Number(right.artifact.purpose === 'cad-model') - Number(left.artifact.purpose === 'cad-model') ||
         (left.artifact.buildId && left.artifact.buildId === right.artifact.buildId
           ? Number(left.artifact.plateId ?? 0) - Number(right.artifact.plateId ?? 0) ||
             Number(right.artifact.format === '3mf') - Number(left.artifact.format === '3mf')

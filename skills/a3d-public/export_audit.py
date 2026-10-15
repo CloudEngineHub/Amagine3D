@@ -19,7 +19,7 @@ import trimesh
 from mesh_topology import MeshTopologyError, physical_body_count
 
 
-EXPORT_AUDIT_SCHEMA = "evidence-export-audit/v1"
+EXPORT_AUDIT_SCHEMA = "evidence-export-audit/v2"
 BOUNDS_TOLERANCE_MM = 0.05
 VOLUME_ABSOLUTE_TOLERANCE_MM3 = 0.05
 VOLUME_RELATIVE_TOLERANCE = 0.005
@@ -170,57 +170,25 @@ def _audit_step(path: Path, expected: dict, label: str) -> dict:
     }
 
 
-def _audit_glb(path: Path, expected_nodes: list[str], label: str) -> dict:
-    try:
-        scene = trimesh.load(path, force="scene", process=False)
-    except Exception as error:
-        raise ExportAuditError(f"{label} GLB read-back failed: {error}") from error
-    if not isinstance(scene, trimesh.Scene):
-        raise ExportAuditError(f"{label} did not read back as a GLB scene")
-    geometry = list(scene.geometry.values())
-    nodes = sorted(str(item) for item in scene.graph.nodes_geometry)
-    errors: list[str] = []
-    if len(geometry) != len(expected_nodes):
-        errors.append(
-            f"{label} geometry count {len(geometry)} does not match expected "
-            f"node count {len(expected_nodes)}"
-        )
-    if len(nodes) != len(expected_nodes):
-        errors.append(
-            f"{label} drawable node count {len(nodes)} does not match expected "
-            f"{len(expected_nodes)}"
-        )
-    if any(
-        not isinstance(mesh, trimesh.Trimesh)
-        or mesh.is_empty
-        or len(mesh.faces) == 0
-        or not np.isfinite(mesh.vertices).all()
-        for mesh in geometry
-    ):
-        errors.append(f"{label} contains empty or non-finite display geometry")
-    missing = sorted(set(expected_nodes) - set(nodes))
-    if missing:
-        errors.append(f"{label} is missing named display nodes {missing}")
-    return {
-        "errors": errors,
-        "expectedNodes": sorted(expected_nodes),
-        "observed": {
-            "geometryCount": len(geometry),
-            "nodes": nodes,
-        },
-        "pass": not errors,
-        "path": str(path.resolve()),
-        "reader": "trimesh-gltf",
-        "sha256": _digest(path),
-        "type": "glb",
-    }
+def _audit_display_step(path: Path, expected_nodes: list[str], label: str) -> dict:
+    from display_step import load_step_objects
+    from build123d import Compound
+    objects, _ = load_step_objects(path)
+    nodes = sorted(record["name"] for record, _ in objects)
+    audit = _audit_step(path, geometry_record(Compound(children=[shape for _, shape in objects])), label)
+    errors = list(audit["errors"])
+    if nodes != sorted(expected_nodes):
+        errors.append(f"{label} STEP object identities differ from expected nodes")
+    return {"errors": errors, "expectedNodes": sorted(expected_nodes),
+            "observed": {"geometryCount": len(objects), "nodes": nodes}, "pass": not errors,
+            "path": str(path.resolve()), "reader": "build123d-occt", "sha256": _digest(path), "type": "step"}
 
 
 def audit_exports(
     *,
     stls: dict[str, tuple[Path, dict]],
     steps: dict[str, tuple[Path, dict]],
-    glb: tuple[Path, list[str]],
+    display_step: tuple[Path, list[str]],
 ) -> dict:
     """Read back every BRep-backend delivery mesh and fail as one unit."""
 
@@ -230,8 +198,8 @@ def audit_exports(
             records[key] = _audit_stl(path.resolve(), expected, key)
         for key, (path, expected) in sorted(steps.items()):
             records[key] = _audit_step(path.resolve(), expected, key)
-        records["glb:display"] = _audit_glb(
-            glb[0].resolve(), list(glb[1]), "glb:display"
+        records["step:display"] = _audit_display_step(
+            display_step[0].resolve(), list(display_step[1]), "step:display"
         )
     except (OSError, ExportAuditError) as error:
         raise ExportAuditError(str(error)) from error

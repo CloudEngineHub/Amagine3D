@@ -83,7 +83,7 @@ class RevisionComparisonTests(unittest.TestCase):
                 cwd=root, capture_output=True, text=True,
             )
             self.assertEqual(result.returncode, 2)
-            self.assertIn("semantic display GLB", result.stderr)
+            self.assertIn("semantic STEP", result.stderr)
             self.assertNotIn("Traceback", result.stderr)
 
 

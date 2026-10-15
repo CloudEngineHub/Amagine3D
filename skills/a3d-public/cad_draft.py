@@ -20,12 +20,12 @@ import sys
 from typing import Any, Mapping
 from uuid import uuid4
 
-from cad_compile import CommandRunner, ConfigurationError, _agent_summary, _positive_timeout, _workspace_path, _write_json
+from cad_compile import CommandRunner, ConfigurationError, _positive_timeout, _workspace_path, _write_json
 from cad_diagnostics import SOURCE_DIAGNOSTICS_SCHEMA
 
 
-DRAFT_SCHEMA = "a3d-draft-result/v1"
-GEOMETRY_SCHEMA = "a3d-draft-geometry/v1"
+DRAFT_SCHEMA = "a3d-draft-result/v2"
+GEOMETRY_SCHEMA = "a3d-draft-geometry/v2"
 CONSTRUCTION_FEATURE_SCOPE = (
     "Registered construction features only; not intent requirements or a complete operation inventory. "
     "Some finish operations and native edits are not registered."
@@ -58,7 +58,8 @@ def _construction_features(features: Mapping[str, Any], parts) -> dict[str, dict
 
 
 def export_draft(parts: Mapping[str, Any], *, references: Mapping[str, Any] | None = None,
-                 construction_features: Mapping[str, Mapping[str, str]] | None = None) -> dict:
+                 construction_features: Mapping[str, Mapping[str, str]] | None = None,
+                 diagnostic: bool = False) -> dict:
     """Call export_draft(parts) from a3d draft to preview named BRep parts.
     BuildSession.export() uses this same preview path under a3d draft. Neither
     form bypasses the final intent, source or manufacturing checks in a3d compile.
@@ -68,6 +69,8 @@ def export_draft(parts: Mapping[str, Any], *, references: Mapping[str, Any] | No
     in millimetres, Z up. This call cannot run as a final compile export.
     construction_features optionally maps registered IDs to owner/role; it does
     not declare intent requirements or cover all finish operations/native edits.
+    diagnostic=True records only the last committed partial construction after
+    failure. It cannot become a successful draft or manufacturing result.
     """
     if os.environ.get("AMAGINE3D_SOURCE_PHASE") != "draft":
         raise RuntimeError("export_draft requires a3d draft; use the complete intent and compile path for final artifacts")
@@ -88,43 +91,86 @@ def export_draft(parts: Mapping[str, Any], *, references: Mapping[str, Any] | No
         raise ValueError("draft part and reference names must be distinct")
     construction_records = _construction_features({} if construction_features is None else construction_features, parts)
 
-    from build123d import Compound, Unit, export_step
+    from build123d import Compound
     from cpu_z_buffer import DEFAULT_MATERIAL, render_contact_sheet
-    from display_glb import appearance, export_display_glb
+    from display_step import appearance, export_display_step
     from export_audit import geometry_record
     from geometry_binding import shape_to_mesh
     from render_preview import _render_inputs
+    from cad_stages import artifact_stage, persist_cad_geometry
 
-    items, shapes, records = [], [], []
+    items, shapes, records, display_shapes = [], [], [], []
     for role, members, color in (("proposed-part", parts, "#6891B5"),
                                   ("component-reference", references, "#E8A54B")):
         for name, original in members.items():
             if not isinstance(name, str) or not name.strip():
                 raise ValueError("every draft object needs a nonempty name")
             shape = deepcopy(original)
-            mesh = shape_to_mesh(shape, f"draft {name}")
             shape.label = f"DRAFT {name}"
             shapes.append(shape)
-            items.append((name, mesh, appearance(color)))
+            display_shapes.append((name, shape, color))
             records.append({"name": name, "role": role, "geometry": geometry_record(shape)})
 
     output.mkdir(parents=True, exist_ok=True)
-    step, glb, preview = (output / name for name in ("draft.step", "draft.glb", "draft-preview.png"))
-    export_step(Compound(children=shapes), str(step), unit=Unit.MM)
-    export_display_glb((), glb, display_items=items,
-                       metadata={"status": "draft", "runId": run_id})
-    contact = render_contact_sheet(
-        _render_inputs(glb, DEFAULT_MATERIAL), 640,
-        title="DRAFT | unvalidated geometry | blue: proposed parts | orange: component references",
-    )
-    contact.image.save(preview, format="PNG")
-    result = {"schema": GEOMETRY_SCHEMA, "status": "draft",
+    step, preview = (output / name for name in ("draft.step", "draft-preview.png"))
+    steps = {"step": (Compound(children=shapes), step)}
+    for (name, shape, color), record in zip(display_shapes, records):
+        key = "object:" + name
+        steps[key] = (shape, output / ("cad-object-" + sha256(name.encode()).hexdigest()[:16] + ".step"))
+        record.update(stepArtifact=key, color=color)
+    stage = persist_cad_geometry(output, "draft", steps, records)
+    items = [(name, shape, appearance(color)) for name, shape, color in display_shapes]
+    with artifact_stage(stage, "display"):
+        display = export_display_step([item for item in items if item[0] in parts], step,
+                                      display_items=[item for item in items if item[0] in references],
+                                      metadata={"status": "draft", "runId": run_id}, reuse_step=True)
+    with artifact_stage(stage, "tessellation"):
+        render_inputs = _render_inputs(step, DEFAULT_MATERIAL)
+    with artifact_stage(stage, "preview"):
+        contact = render_contact_sheet(
+            render_inputs, 640,
+            title="DRAFT | unvalidated geometry | blue: proposed parts | orange: component references",
+        )
+        contact.image.save(preview, format="PNG")
+    result = {"schema": GEOMETRY_SCHEMA, "status": "diagnostic" if diagnostic else "draft",
               "runId": run_id, "units": "mm", "coordinateSystem": {"handedness": "right", "up": "Z"},
               "objects": records,
               "constructionFeatures": construction_records, "constructionFeatureScope": CONSTRUCTION_FEATURE_SCOPE,
-              "artifacts": {"step": _binding(step), "glb": _binding(glb), "preview": _binding(preview)}}
+              "artifacts": {"step": {**_binding(step), "scene": display["scene"]}, "preview": _binding(preview)}}
     _write_json(manifest_path, result)
     return result
+
+
+def _validated_geometry(output: Path, run_id: str, *, status: str) -> dict:
+    manifest_path = _workspace_path(output, Path("draft-geometry.json"), "draft manifest", must_exist=True)
+    manifest = json.loads(manifest_path.read_text())
+    if (not isinstance(manifest, dict) or manifest.get("schema") != GEOMETRY_SCHEMA
+            or manifest.get("status") != status or manifest.get("runId") != run_id
+            or not isinstance(manifest.get("artifacts"), dict) or not isinstance(manifest.get("objects"), list)):
+        raise ValueError("source did not emit current draft geometry")
+    for kind, filename in (("step", "draft.step"), ("preview", "draft-preview.png")):
+        path = _workspace_path(output, Path(filename), f"draft {kind}", must_exist=True)
+        ref = manifest["artifacts"].get(kind)
+        if not isinstance(ref, dict) or any(ref.get(key) != value for key, value in _binding(path).items()):
+            raise ValueError(f"draft {kind} does not match its recorded bytes")
+        if kind == "step" and ref.get("scene"):
+            scene_ref = ref["scene"]
+            scene_path = _workspace_path(output, Path(scene_ref["path"]), "draft STEP scene", must_exist=True)
+            if _binding(scene_path) != {key: scene_ref[key] for key in ("path", "sha256")}:
+                raise ValueError("draft STEP scene does not match its recorded bytes")
+            descriptor = json.loads(scene_path.read_text(encoding="utf-8"))
+            if descriptor.get("schema") != "a3d-step-display/v1" or descriptor.get("step") != _binding(path):
+                raise ValueError("draft STEP scene does not match its model")
+            for item in descriptor.get("objects", []):
+                object_ref = item.get("step", {})
+                object_path = _workspace_path(output, Path(object_ref["path"]), "draft STEP object", must_exist=True)
+                if _binding(object_path) != {key: object_ref[key] for key in ("path", "sha256")}:
+                    raise ValueError("draft STEP object does not match its recorded bytes")
+    _construction_features(manifest.get("constructionFeatures", {}),
+                           {item["name"] for item in manifest["objects"] if item["role"] == "proposed-part"})
+    if manifest.get("constructionFeatureScope", CONSTRUCTION_FEATURE_SCOPE) != CONSTRUCTION_FEATURE_SCOPE:
+        raise ValueError("draft construction feature scope changed")
+    return manifest
 
 
 def run_draft(source: Path, *, workspace: Path, timeout_seconds: float = 120.0,
@@ -157,6 +203,7 @@ def run_draft(source: Path, *, workspace: Path, timeout_seconds: float = 120.0,
     command = runner.run(
         "draft-source", [sys.executable, str(source)], cwd=workspace, timeout_seconds=timeout_seconds,
         env_extra={"AMAGINE3D_SOURCE_PHASE": "draft", "AMAGINE3D_DRAFT_DIR": str(output),
+                   "AMAGINE3D_CAD_SOURCE_PATH": str(source),
                    "AMAGINE3D_DRAFT_RUN_ID": run_id, "AMAGINE3D_OUTPUT_DIR": str(output),
                    "AMAGINE3D_INTENT_PATH": str(intent) if intent is not None else "", "AMAGINE3D_SCENE_PATH": "",
                    "AMAGINE3D_COMPILE_RUN_ID": "", "AMAGINE3D_SOURCE_DIAGNOSTICS_PATH": str(diagnostics_path),
@@ -186,31 +233,49 @@ def run_draft(source: Path, *, workspace: Path, timeout_seconds: float = 120.0,
             result["sourceDiagnostics"] = diagnostics_binding
         except (OSError, ValueError, AttributeError) as error:
             result["diagnosticWarning"] = str(error)
+    cad_document = None
+    stage_path = output / "draft_cad-stage.json"
+    if stage_path.exists():
+        try:
+            from cad_stages import attach_cad_stage
+            cad_document = attach_cad_stage(result, stage_path, workspace, run_id)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            result["diagnosticWarning"] = "CAD stage rejected: " + str(error)
     if command.timed_out or command.returncode != 0 or source_issues or "diagnosticWarning" in result:
-        issue = {"code": "DRAFT.TIMEOUT" if command.timed_out else "DRAFT.SOURCE_FAILED",
-                 "message": "draft exceeded its deadline" if command.timed_out else "draft source failed; inspect draft.log"}
+        issue = {"code": "DRAFT.TIMEOUT" if command.timed_out else "DRAFT.SOURCE_FAILED" if command.returncode != 0 or source_issues else "DRAFT.INCOMPLETE",
+                 "message": "draft exceeded its deadline" if command.timed_out else result.get("diagnosticWarning", "draft source failed; inspect draft.log")}
         if not command.timed_out:
             issue.update(detail=command.output_tail[-1600:], repairHint=SOURCE_GUIDANCE)
         if source_issues:
-            issue["sourceIssue"] = _agent_summary({"issues": source_issues[:1]})["issues"][0]
-            issue["omittedSourceIssueCount"] = len(source_issues) - 1
-            issue["repairHint"] = "Use the sourceIssue measurements to repair the geometry; full evidence is in sourceDiagnostics."
-        result["issues"].append(issue)
+            result["issues"].extend(source_issues)
+            issue["repairHint"] = "Use the source diagnostic measurements to repair the geometry."
+        if cad_document and cad_document["issues"] and not command.timed_out:
+            result["issues"].extend(cad_document["issues"])
+        else:
+            result["issues"].append(issue)
+        if not command.timed_out and (output / "draft-geometry.json").exists():
+            try:
+                provisional = json.loads((output / "draft-geometry.json").read_text())
+                if provisional.get("status") != "diagnostic":
+                    # A regular export followed by a caught failure is not
+                    # evidence of a managed rollback preview.
+                    provisional = None
+                if _binding(source) != source_binding or (intent is not None and _binding(intent) != intent_binding):
+                    raise ValueError("draft inputs changed; diagnostic preview discarded")
+                if provisional is not None:
+                    manifest = _validated_geometry(output, run_id, status="diagnostic")
+                    result.update(artifacts=manifest["artifacts"], objects=manifest["objects"],
+                                  previewScope="diagnostic: last committed partial construction; failed operation was not applied",
+                                  geometry=_binding(output / "draft-geometry.json"))
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                result["diagnosticWarning"] = str(error)
     else:
         try:
             if _binding(source) != source_binding:
                 raise ValueError("draft source changed during execution")
             if intent is not None and _binding(intent) != intent_binding:
                 raise ValueError("draft intent changed during execution")
-            manifest = json.loads((output / "draft-geometry.json").read_text())
-            if (not isinstance(manifest, dict) or manifest.get("schema") != GEOMETRY_SCHEMA
-                    or manifest.get("status") != "draft" or manifest.get("runId") != run_id
-                    or not isinstance(manifest.get("artifacts"), dict) or not isinstance(manifest.get("objects"), list)):
-                raise ValueError("source did not emit current draft geometry")
-            for kind, filename in (("step", "draft.step"), ("glb", "draft.glb"), ("preview", "draft-preview.png")):
-                path = _workspace_path(output, Path(filename), f"draft {kind}", must_exist=True)
-                if manifest["artifacts"].get(kind) != _binding(path):
-                    raise ValueError(f"draft {kind} does not match its recorded bytes")
+            manifest = _validated_geometry(output, run_id, status="draft")
             construction_records = _construction_features(
                 manifest.get("constructionFeatures", {}),
                 {item["name"] for item in manifest["objects"] if item["role"] == "proposed-part"},

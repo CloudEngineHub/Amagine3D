@@ -20,7 +20,8 @@ const unitA = [
   'test_build_manifest',
   'test_cad_compile',
   'test_cad_draft',
-  'test_display_glb_normals',
+  'test_display_normals',
+  'test_step_preview',
   'test_interface_recipes',
   'test_mesh_topology',
   'test_render_preview_materials',
@@ -29,6 +30,10 @@ const unitA = [
   'test_text_a3d_scene_contract',
 ];
 const unitB = [
+  'test_agent_api',
+  'test_design_language',
+  'test_design_roles',
+  'test_design_connections',
   'test_assembly_orientation',
   'test_brep_envelope',
   'test_brep_stl_normalization',

@@ -57,7 +57,7 @@ class CadDraftTests(unittest.TestCase):
         command = self.cli("draft", source.name)
         self.assertEqual(command.returncode, 0, command.stdout + command.stderr)
         result = json.loads(command.stdout)
-        self.assertEqual(result["schema"], "a3d-draft-result/v1")
+        self.assertEqual(result["schema"], "a3d-draft-result/v2")
         self.assertEqual(result["status"], "draft")
         self.assertEqual(result["issues"], [])
         self.assertNotIn("deliveryReady", result)
@@ -89,13 +89,45 @@ class CadDraftTests(unittest.TestCase):
         # The module cavity and smaller through viewing aperture are real BRep cuts.
         frame_volume = records["frame"]["geometry"]["volumeMm3"]
         self.assertAlmostEqual(frame_volume, 47 * 35 * 15 - 41 * 29 * 13 - 34 * 22 * 2, places=5)
-        display = trimesh.load(result["artifacts"]["glb"]["path"], force="scene", process=False)
-        self.assertEqual(display.metadata["status"], "draft")
-        self.assertNotIn("deliveryReady", display.metadata)
-        self.assertTrue(all(mesh.metadata["amagine3d"]["role"] == "display-only" for mesh in display.geometry.values()))
-        with Image.open(result["artifacts"]["preview"]["path"]) as picture:
-            self.assertGreaterEqual(picture.width, 640)
-            self.assertGreater(len(picture.getcolors(picture.width * picture.height)), 50)
+        from display_step import load_step_objects
+        display, _ = load_step_objects(result["artifacts"]["step"]["path"])
+        self.assertEqual({record["name"] for record, _ in display}, set(records))
+        self.assertFalse(list(self.workspace.rglob("*.glb")))
+
+    def test_display_failure_keeps_validated_step_without_claiming_full_success(self):
+        self.source("""from build123d import Box
+import display_step
+def fail_display(*args, **kwargs):
+    raise display_step.DisplayStepError('test normal readback failure', code='DISPLAY.NORMALS_INVALID', partId='body', invalidNormalCount=3)
+display_step.export_display_step = fail_display
+from cad_draft import export_draft
+export_draft({'body': Box(10, 10, 10)})
+""")
+        command = self.cli("draft", "draft.py")
+        result = json.loads(command.stdout)
+        self.assertEqual(command.returncode, 1, command.stdout + command.stderr)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(set(result["artifacts"]), {"step"})
+        self.assertEqual(result["artifactStages"]["cadExport"]["status"], "passed")
+        self.assertEqual(result["artifactStages"]["display"]["status"], "failed")
+        self.assertEqual(result["artifactStages"]["manufacturing"]["status"], "pending")
+        self.assertEqual(result["issues"][0]["code"], "DISPLAY.NORMALS_INVALID")
+        self.assertEqual(result["issues"][0]["invalidNormalCount"], 3)
+        self.assertNotIn("BuildSession", result["issues"][0]["repairHint"])
+        self.assertTrue(import_step(result["artifacts"]["step"]["path"]).is_valid)
+
+    def test_step_writer_false_is_not_a_ready_cad_file(self):
+        self.source("""import build123d
+build123d.export_step = lambda *args, **kwargs: False
+from cad_draft import export_draft
+export_draft({'body': build123d.Box(10, 10, 10)})
+""")
+        command = self.cli("draft", "draft.py")
+        result = json.loads(command.stdout)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["artifacts"], {})
+        self.assertEqual(result["artifactStages"]["cadExport"]["status"], "failed")
+        self.assertEqual(result["issues"][0]["code"], "CAD.STEP_EXPORT_FAILED")
 
     def test_timeout_kills_source_and_descendant(self):
         self.source("import subprocess, sys, time\nfrom pathlib import Path\np = subprocess.Popen([sys.executable, '-c', \"import time; from pathlib import Path; time.sleep(1); Path('escaped-timeout').write_text('bad')\"])\nPath('child.pid').write_text(str(p.pid))\ntime.sleep(20)\n")
@@ -144,8 +176,9 @@ class CadDraftTests(unittest.TestCase):
                 self.assertEqual(result["artifacts"], {})
                 hint = result["issues"][0]["repairHint"]
                 self.assertIn("export_draft(parts)", hint)
-                self.assertIn("BuildSession", hint)
-                self.assertIn("a3d compile", hint)
+                if result["issues"][0]["code"] != "CAD.GEOMETRY_FAILED":
+                    self.assertIn("BuildSession", hint)
+                    self.assertIn("a3d compile", hint)
                 log = Path(result["log"]["path"])
                 self.assertEqual(sha256(log.read_bytes()).hexdigest(), result["log"]["sha256"])
                 if "BuildSession" in source:
@@ -165,7 +198,9 @@ class CadDraftTests(unittest.TestCase):
         self.assertEqual(result["issues"][0]["code"], "DRAFT.SOURCE_FAILED")
         self.assertIn("RuntimeError: unfinished source", result["issues"][0]["detail"])
         self.assertIn("RuntimeError: unfinished source", Path(result["log"]["path"]).read_text())
-        self.assertEqual(result["artifacts"], {})
+        self.assertEqual(set(result["artifacts"]), {"step"})
+        self.assertEqual(result["artifactStages"]["cadExport"]["status"], "passed")
+        self.assertNotIn("glb", result["artifacts"])
         self.assertTrue((Path(result["result"]).parent / "draft-preview.png").is_file())
 
     def test_mutated_geometry_bytes_are_not_bound_as_ready_draft(self):
@@ -184,7 +219,8 @@ p.write_text(json.dumps(data))
                 self.assertEqual(command.returncode, 1)
                 self.assertEqual(result["issues"][0]["code"], "DRAFT.INCOMPLETE")
                 self.assertNotIn("repairHint", result["issues"][0])
-                self.assertEqual(result["artifacts"], {})
+                self.assertEqual(set(result["artifacts"]), {"step"})
+                self.assertEqual(result["artifactStages"]["cadExport"]["status"], "passed")
                 self.assertNotIn("constructionFeatures", result)
 
     def test_construction_metadata_rejects_invalid_fields_before_geometry_export(self):
@@ -266,13 +302,17 @@ build.export()
                 command = self.cli("draft", "draft.py")
                 self.assertEqual(command.returncode, 1, command.stdout + command.stderr)
                 result = json.loads(command.stdout)
-                self.assertEqual(result["artifacts"], {})
-                cause = result["issues"][0]["sourceIssue"]
+                self.assertEqual(result["status"], "failed")
+                self.assertIn("diagnostic", result["previewScope"])
+                self.assertEqual(set(result["artifacts"]), {"step", "preview"})
+                for record in result["artifacts"].values():
+                    self.assertEqual(sha256(Path(record["path"]).read_bytes()).hexdigest(), record["sha256"])
+                cause = result["issues"][0]
                 self.assertEqual(cause["code"], code)
-                witness = cause["booleanWitness"]
+                witness = cause["observed"]["booleanWitness"]
                 self.assertEqual(witness["ownerPartId"], "body")
-                self.assertAlmostEqual(witness["component"]["gapMm"], gap)
-                self.assertEqual(len(witness["component"]["ownerPointMm"]), 3)
+                self.assertAlmostEqual(witness["components"][0]["gapMm"], gap)
+                self.assertEqual(len(witness["components"][0]["ownerPointMm"]), 3)
                 binding = result["sourceDiagnostics"]
                 payload = Path(binding["path"]).read_bytes()
                 self.assertEqual(sha256(payload).hexdigest(), binding["sha256"])
@@ -307,11 +347,12 @@ data = json.loads(p.read_text())
             self.assertEqual(command.returncode, 1, command.stdout + command.stderr)
             result = json.loads(command.stdout)
             self.assertNotIn("deliveryReady", result)
-            self.assertEqual(result["artifacts"], {})
+            self.assertEqual(set(result["artifacts"]), {"step"})
+            self.assertNotIn("glb", result["artifacts"])
             if tail:
                 self.assertTrue(result["diagnosticWarning"])
             else:
-                self.assertEqual(result["issues"][0]["sourceIssue"]["code"], "SOURCE.UNION_DISCONNECTED")
+                self.assertEqual(result["issues"][0]["code"], "SOURCE.UNION_DISCONNECTED")
 
     def test_draft_api_and_incomplete_contract_cannot_enter_final_compile(self):
         marker = self.workspace / ".start"

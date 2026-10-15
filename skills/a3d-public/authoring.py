@@ -1,7 +1,7 @@
 """Deterministic authoring helpers for the canonical intent and scene contracts.
 
 This module deliberately has no intermediate document format.  It writes the
-same evidence-cad-intent/v5 and evidence-semantic-scene/v1 JSON documents that
+same evidence-cad-intent/v5 and evidence-semantic-scene/v2 JSON documents that
 the validators and compilers consume.  The compact inputs only remove fields
 whose values are mechanically implied by an explicit semantic decision.
 """
@@ -18,6 +18,7 @@ import tempfile
 from typing import Any, Mapping, Sequence
 
 from capability_registry import capability_for_connection, connection_kinds
+from cad_diagnostics import contract_issue
 from intent_contract import (
     COORDINATE_SYSTEM,
     INTENT_SCHEMA,
@@ -36,16 +37,27 @@ from scene_contract import (
 SCENE_COORDINATE_SYSTEM = {"handedness": "right", "up": "Z"}
 
 
+def _authoring_issue(error: Any, stage: str) -> dict[str, Any]:
+    """Carry a validator's structured rule and location when it provides one."""
+
+    structured = contract_issue(error)
+    return structured if structured is not None else {
+        "code": "AUTHORING.INVALID", "path": stage, "message": str(error),
+    }
+
+
 class AuthoringError(ValueError):
     """Raised before an invalid or semantically ambiguous document is written."""
 
     def __init__(
-        self, stage: str, errors: Sequence[str], *,
+        self, stage: str, errors: Sequence[Any], *,
         issues: Sequence[Mapping[str, Any]] = (),
     ):
         self.stage = stage
         self.errors = tuple(str(error) for error in errors)
-        self.issues = tuple(deepcopy(dict(issue)) for issue in issues)
+        self.issues = tuple(deepcopy(dict(issue)) for issue in issues) or tuple(
+            _authoring_issue(error, stage) for error in errors
+        )
         super().__init__(f"{stage} authoring failed: " + "; ".join(self.errors))
         diagnostic_path = os.environ.get("AMAGINE3D_SOURCE_DIAGNOSTICS_PATH")
         run_id = os.environ.get("AMAGINE3D_COMPILE_RUN_ID")
@@ -54,12 +66,9 @@ class AuthoringError(ValueError):
 
     def _persist_diagnostics(self) -> None:
         """Preserve complete diagnostics across the compiler subprocess boundary."""
-        records = self.issues or tuple({
-            "code": "AUTHORING.INVALID", "path": self.stage, "message": message,
-        } for message in self.errors)
         issues = [{"check": "authoring", "severity": "error", **item,
                    **({"observed": item["actual"]} if "actual" in item else {})}
-                  for item in records]
+                  for item in self.issues]
 
         def json_value(value: Any) -> Any:
             if isinstance(value, float) and not math.isfinite(value):

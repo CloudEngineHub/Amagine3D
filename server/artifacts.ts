@@ -9,7 +9,7 @@ import type {
 } from '../src/types.ts';
 import { isContainedRelativePath } from './path-safety.ts';
 
-const MODEL_EXTENSIONS = new Set(['.3mf', '.glb', '.step', '.stl', '.stp']);
+const MODEL_EXTENSIONS = new Set(['.3mf', '.step', '.stl', '.stp']);
 const IMAGE_EXTENSIONS = new Set(['.gif', '.jpeg', '.jpg', '.png', '.webp']);
 const REPORT_EXTENSIONS = new Set(['.json', '.md', '.txt']);
 const SOURCE_EXTENSIONS = new Set(['.js', '.mjs', '.py']);
@@ -32,6 +32,7 @@ function kindForExtension(extension: string): ArtifactKind {
 }
 
 function kindForArtifact(name: string, extension: string): ArtifactKind {
+  if (name.endsWith('.a3d.json')) return 'source';
   if (
     extension === '.json' &&
     /(?:^|[._-])(?:semantic[._-])?scene\.json$/iu.test(name)
@@ -43,7 +44,7 @@ function kindForArtifact(name: string, extension: string): ArtifactKind {
 
 function previewFormat(extension: string): PreviewFormat | undefined {
   if (extension === '.3mf') return '3mf';
-  if (extension === '.glb') return 'glb';
+  if (extension === '.step' || extension === '.stp') return 'step';
   if (extension === '.stl') return 'stl';
   return undefined;
 }
@@ -79,14 +80,18 @@ export async function scanArtifacts(
       if (!entry.isFile()) continue;
       const extension = extname(entry.name).toLowerCase();
       const kind = kindForArtifact(entry.name, extension);
-      if (kind === 'other') continue;
+      const legacyAttachment = extension === '.glb' || extension === '.gltf';
+      if (kind === 'other' && !legacyAttachment) continue;
       const metadata = await stat(absolutePath);
       const path = toPosixPath(relative(workspaceRoot, absolutePath));
       artifacts.push({
+        ...(legacyAttachment ? { legacy: true, readOnly: true } : {}),
         ...(previewFormat(extension)
           ? { format: previewFormat(extension) }
           : {}),
         kind,
+        ...(kind === 'model' ? { purpose: /(?:^|\/)(?:feature-[^/]+|installation-witnesses)(?:\/|\.)/u.test(path)
+          ? 'internal-evidence' as const : 'unclassified' as const } : {}),
         modifiedAt: metadata.mtime.toISOString(),
         name: entry.name,
         path,
@@ -133,6 +138,8 @@ export function artifactContentType(path: string): string {
       return 'model/3mf';
     case '.glb':
       return 'model/gltf-binary';
+    case '.gltf':
+      return 'model/gltf+json';
     case '.gif':
       return 'image/gif';
     case '.jpeg':

@@ -5,12 +5,11 @@ import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path'
 
 import { isContainedRelativePath } from './path-safety.ts';
 
-export const BUILD_REPORT_SCHEMA = 'evidence-a3d-build/v1';
+export const BUILD_REPORT_SCHEMA = 'evidence-a3d-build/v2';
 export const BUILD_BACKENDS = new Set([
   'brep-assembly',
   'brep-color-regions',
   'brep-part',
-  'hybrid-mesh',
 ]);
 
 const SHA256 = /^[0-9a-f]{64}$/u;
@@ -20,7 +19,7 @@ const SEMANTIC_RECORD_TOLERANCE_MM = 0.0002;
 const INPUT_SCHEMAS = {
   intent: 'evidence-cad-intent/v5',
   profile: 'evidence-bambu-printer-profile/v1',
-  scene: 'evidence-semantic-scene/v1',
+  scene: 'evidence-semantic-scene/v2',
 } as const;
 
 export interface BuildFileReference {
@@ -32,7 +31,7 @@ export interface BuildFileReference {
 }
 
 interface ArtifactMatrixPart {
-  glb?: unknown;
+  displayStep?: unknown;
   step?: unknown;
   stl?: unknown;
   threeMf?: unknown;
@@ -1083,7 +1082,7 @@ function validBackendData(
 }
 
 function expectedArtifactFrame(key: string): string | undefined {
-  if (key === 'glb:display' || key.startsWith('step:')) return 'semantic';
+  if (key === 'step:display' || key.startsWith('step:')) return 'semantic';
   if (key === '3mf' || key === 'stl' || key.startsWith('plate-stl:') || /^plate:\d+:(stl|3mf)$/u.test(key)) {
     return 'plate-print';
   }
@@ -1096,7 +1095,7 @@ function expectedArtifactFrame(key: string): string | undefined {
 function artifactSuffixMatches(key: string, path: unknown): boolean {
   if (!nonEmptyString(path)) return false;
   const suffix = extname(path).toLowerCase();
-  if (key === 'glb:display') return suffix === '.glb';
+  if (key === 'step:display') return ['.step', '.stp'].includes(suffix);
   if (key === '3mf' || /^plate:\d+:3mf$/u.test(key)) return suffix === '.3mf';
   if (
     key === 'stl' ||
@@ -1124,7 +1123,7 @@ function expectedArtifactKeys(
   artifacts: Record<string, unknown>,
   requiresThreeMf: boolean,
 ): Set<string> | undefined {
-  const expected = new Set(['glb:display']);
+  const expected = new Set(['step:display']);
   for (const partId of partIds) {
     expected.add(`stl:${partId}`);
   }
@@ -1305,7 +1304,7 @@ function validStructure(report: UnifiedBuildReport): boolean {
           'mesh-source/v1',
         ].includes(String(record.schema)) ||
         !nonEmptyString(record.path) ||
-        !['.glb', '.gltf', '.obj', '.ply', '.stl'].includes(
+        !['.obj', '.ply', '.stl'].includes(
           extname(record.path).toLowerCase(),
         ) ||
         !SHA256.test(String(record.sha256))
@@ -1324,8 +1323,8 @@ function validStructure(report: UnifiedBuildReport): boolean {
     masters.add(String(part.representationMaster));
     if (
       JSON.stringify(Object.keys(requirements).sort()) !==
-        JSON.stringify(['glb', 'step', 'stl', 'threeMf']) ||
-      requirements.glb !== 'required' ||
+        JSON.stringify(['displayStep', 'step', 'stl', 'threeMf']) ||
+      requirements.displayStep !== 'required' ||
       requirements.stl !== 'required' ||
       !['required', 'not-applicable'].includes(String(requirements.threeMf))
     ) {
@@ -1367,7 +1366,7 @@ function validStructure(report: UnifiedBuildReport): boolean {
   const requiresThreeMf = threeMfStatuses.has('required');
   if (!validBackendData(report, backend, partIds, requiresThreeMf)) return false;
   if (
-    !objectRecord(artifacts['glb:display']) ||
+    !objectRecord(artifacts['step:display']) ||
     (requiresThreeMf &&
       (!objectRecord(artifacts['3mf']) ||
         !objectRecord(artifacts.materialPlan) ||
@@ -1441,7 +1440,7 @@ function validStructure(report: UnifiedBuildReport): boolean {
     }
     const expectedFrame = expectedArtifactFrame(key);
     if (expectedFrame && artifact.coordinateFrame !== expectedFrame) return false;
-    if (key.startsWith('step:')) {
+    if (key.startsWith('step:') && key !== 'step:display') {
       const suffix = key.slice('step:'.length);
       if (!partIds.includes(suffix) && !(backend === 'brep-assembly' && suffix === 'assembly')) {
         return false;
@@ -1574,7 +1573,7 @@ async function validateBrepExportAudit(
     !fileAudit ||
     canonicalJson(inlineAudit) !== canonicalJson(fileAudit) ||
     !exactKeys(fileAudit, ['artifacts', 'errors', 'pass', 'schema']) ||
-    fileAudit.schema !== 'evidence-export-audit/v1' ||
+    fileAudit.schema !== 'evidence-export-audit/v2' ||
     fileAudit.pass !== true ||
     !Array.isArray(fileAudit.errors) ||
     fileAudit.errors.length !== 0
@@ -1587,7 +1586,7 @@ async function validateBrepExportAudit(
   const ownedKeys = Object.keys(reportArtifacts)
     .filter(
       (key) =>
-        key === 'glb:display' ||
+        key === 'step:display' ||
         key === 'stl' ||
         key.startsWith('stl:') ||
         key.startsWith('step:') ||
@@ -1616,7 +1615,7 @@ async function validateBrepExportAudit(
     ) {
       return false;
     }
-    if (key === 'glb:display') {
+    if (key === 'step:display') {
       const observed = objectRecord(audit.observed);
       const observedNodes = observed?.nodes;
       if (
@@ -1630,8 +1629,8 @@ async function validateBrepExportAudit(
           'sha256',
           'type',
         ]) ||
-        audit.type !== 'glb' ||
-        audit.reader !== 'trimesh-gltf' ||
+        audit.type !== 'step' ||
+        audit.reader !== 'build123d-occt' ||
         !Array.isArray(audit.expectedNodes) ||
         audit.expectedNodes.length === 0 ||
         !audit.expectedNodes.every(nonEmptyString) ||
@@ -2006,7 +2005,7 @@ async function validateHybridEvidence(
   if (
     boundScene?.schema !== INPUT_SCHEMAS.scene ||
     boundScene.revision !== report.revision ||
-    shapeConsistency?.schema !== 'evidence-shape-consistency-manifest/v1' ||
+    shapeConsistency?.schema !== 'evidence-shape-consistency-manifest/v2' ||
     shapeConsistency.pass !== true ||
     shapeConsistency.revision !== report.revision ||
     stepConsistency?.schema !== 'evidence-step-consistency/v1' ||
@@ -2170,6 +2169,7 @@ export async function validateUnifiedBuildReport(
     if (!(await validateBrepExportAudit(report, artifactPaths, artifactJson))) {
       return undefined;
     }
+    if (!(await validateStepDisplay(canonicalRoot, canonicalReport, report, artifactPaths))) return undefined;
     if (!(await validateHybridEvidence(report, artifactPaths, artifactJson))) {
       return undefined;
     }
@@ -2190,4 +2190,35 @@ export async function validateUnifiedBuildReport(
   } catch {
     return undefined;
   }
+}
+
+async function validateStepDisplay(root: string, reportPath: string, report: UnifiedBuildReport, paths: Record<string, string>): Promise<boolean> {
+  const display = objectRecord(report.artifacts?.['step:display']);
+  if (!display) return false;
+  const sceneRef = objectRecord(display.scene);
+  if (!sceneRef) return false;
+  const bound = await resolveBoundFile(root, reportPath, sceneRef, { parseJson: true });
+  const scene = objectRecord(bound?.json);
+  const step = objectRecord(scene?.step);
+  if (scene?.schema !== 'a3d-step-display/v1' || scene.units !== 'mm' || step?.path !== display.path || step?.sha256 !== display.sha256 || !Array.isArray(scene.objects) || !scene.objects.length) return false;
+  paths.displayScene = bound!.path;
+  const names = new Set<string>();
+  for (const value of scene.objects) {
+    const obj = objectRecord(value);
+    const geometry = objectRecord(obj?.geometry);
+    const style = objectRecord(obj?.appearance);
+    const ref = objectRecord(obj?.step);
+    if (!obj || !nonEmptyString(obj.name) || names.has(obj.name) || !['manufactured', 'display-only'].includes(String(obj.role)) || obj.coordinateFrame !== 'semantic' || obj.transformApplied !== true || !geometry || geometry.valid !== true || !Number.isInteger(geometry.bodyCount) || Number(geometry.bodyCount) < (obj.role === 'manufactured' ? 1 : 0) || !(obj.role === 'display-only' ? validDisplayBounds(geometry.boundsMm) : validBounds(geometry.boundsMm)) || !finiteNumber(geometry.volumeMm3) || !style || !/^#[\da-f]{6}$/iu.test(String(style.baseColor)) || !finiteNumber(style.metallic) || style.metallic < 0 || style.metallic > 1 || !finiteNumber(style.roughness) || style.roughness < 0 || style.roughness > 1 || !ref || !(await resolveBoundFile(root, reportPath, ref))) return false;
+    names.add(obj.name);
+    paths['displayObject:' + obj.name] = (await resolveBoundFile(root, reportPath, ref))!.path;
+  }
+  const audit = objectRecord(objectRecord(objectRecord(report.backendData)?.exportAudit)?.artifacts)?.['step:display'];
+  const expected = objectRecord(audit)?.expectedNodes;
+  return Array.isArray(expected) && expected.length === names.size && expected.every((name) => names.has(String(name)));
+}
+
+function validDisplayBounds(value: unknown): boolean {
+  const bounds = objectRecord(value);
+  if (!bounds || !finiteVector3(bounds.min) || !finiteVector3(bounds.max) || !finiteVector3(bounds.size)) return false;
+  return bounds.min.every((x, i) => x <= (bounds.max as number[])[i]! && Math.abs((bounds.max as number[])[i]! - x - (bounds.size as number[])[i]!) < 1e-5);
 }

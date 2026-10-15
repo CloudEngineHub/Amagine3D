@@ -156,10 +156,10 @@ target. `examples/surface_shell_build.py` checks the envelope in that same pass
 and reports all deviations together. Rechecking only the
 edited region can miss changes elsewhere in a smooth surface.
 
-Preserve the previous display GLB before overwriting build outputs, then compare
-revisions with `a3d compare BEFORE.glb AFTER.glb --view side`. It uses a shared
+Preserve the previous display STEP before overwriting build outputs, then compare
+revisions with `a3d compare BEFORE.step AFTER.step --view side`. It uses a shared
 orthographic frame without aligning or independently scaling the objects. The
 image shows before/after surfaces and projected occupancy change. Red means
 visible projection present only before; teal means only after. Occluded changes
 may be invisible, and the overlap ratio is not a quality score. Use matching
-semantic assembly GLBs; independently placed print layouts are different frames.
+semantic assembly STEP files; independently placed print layouts are different frames.

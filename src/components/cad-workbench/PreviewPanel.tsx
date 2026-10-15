@@ -17,6 +17,7 @@ const CadViewer = lazy(() =>
 );
 
 interface PreviewPanelProps {
+  cadArtifact?: ArtifactSummary;
   connectionStatus: string | undefined;
   language: Language;
   onTogglePrintPreview: () => void;
@@ -30,6 +31,7 @@ interface PreviewPanelProps {
 }
 
 export function PreviewPanel({
+  cadArtifact,
   connectionStatus,
   language,
   onTogglePrintPreview,
@@ -55,7 +57,7 @@ export function PreviewPanel({
       ? selectedArtifact
       : previewArtifact;
   const assemblyPreview = selectedArtifact?.kind !== 'image'
-    && selectedText === undefined && previewArtifact?.format === 'glb';
+    && selectedText === undefined && previewArtifact?.format === 'step';
   const referenceInfo = viewerStatus.referenceComponents;
   const canHideReferences = assemblyPreview && viewerStatus.state === 'ready'
     && (referenceInfo?.referenceMeshes ?? 0) > 0;
@@ -73,6 +75,21 @@ export function PreviewPanel({
       'This model has no labeled reference components to hide.',
       '此模型没有可单独隐藏的已标记参考元件。',
     );
+  const resultArtifact = previewArtifact ?? selectedArtifact;
+  const resultLabel = resultArtifact?.legacy ? resultArtifact.kind === 'other'
+    ? text('Historical attachment · STEP required for preview', '历史附件缺少 STEP，无法按新流程预览')
+    : text('Historical CAD result · no current checks', '历史 CAD 结果，尚未执行本轮检查') : resultArtifact?.inputsCurrent === false
+    ? text('Previous revision · rebuild required', '上一版结果，当前设计已变化')
+    : resultArtifact?.manufacturingStatus === 'passed' && resultArtifact.status === 'failed'
+      ? text('Manufacturing checks passed · retry preview', '制造检查已通过，预览待重试')
+    : resultArtifact?.status === 'draft'
+      ? text('Draft · assembly and print checks pending', '草稿，尚未完成装配与打印验证')
+      : resultArtifact?.status === 'failed' || resultArtifact?.status === 'diagnostic'
+        ? text('Diagnostic · unresolved checks remain', '诊断结果，仍有未通过项')
+        : resultArtifact?.status === 'validated'
+          ? resultArtifact.manufacturingStatus === 'pending'
+            ? text('CAD exports verified · manufacturing checks pending', 'CAD 导出已验证，制造检查待完成')
+            : text('Automatic checks passed · visual review required', '自动检查已通过，仍需视觉审查') : undefined;
   return (
     <section className={styles.centerPanel} aria-label={text('Model preview', '模型预览')}>
       <header className={styles.canvasToolbar}>
@@ -84,6 +101,9 @@ export function PreviewPanel({
                 {headingArtifact?.path ?? connectionStatus}
               </span>
             ) : null}
+            {resultLabel ? <span className={styles.canvasLabel} role="status">{resultLabel}</span> : null}
+            {cadArtifact && (!previewArtifact || previewArtifact.inputsCurrent === false) ?
+              <span className={styles.canvasLabel}>{text('Current CAD file saved; preview pending.', '当前 CAD 文件已保存，预览尚未就绪。')}</span> : null}
           </div>
         </div>
         <div className={styles.canvasMeta}>
@@ -152,6 +172,12 @@ export function PreviewPanel({
           <pre className={styles.codePreview} tabIndex={0}>
             <code>{selectedText}</code>
           </pre>
+        ) : !previewArtifact && (selectedArtifact?.purpose === 'cad-model' || cadArtifact) ? (
+          <div className={styles.emptyCanvas}>
+            <span>{text('CAD file available. Preview is not ready.', 'CAD 文件已保留，预览尚未就绪。')}</span>
+            <a href={(selectedArtifact?.purpose === 'cad-model' ? selectedArtifact : cadArtifact)!.url}
+              download={(selectedArtifact?.purpose === 'cad-model' ? selectedArtifact : cadArtifact)!.name}>{text('Download STEP', '下载 STEP')}</a>
+          </div>
         ) : (
           <Suspense
             fallback={

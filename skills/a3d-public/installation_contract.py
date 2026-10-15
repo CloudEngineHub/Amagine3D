@@ -4,6 +4,8 @@ import math
 from pathlib import Path
 import re
 
+from cad_diagnostics import ContractIssue
+
 
 CHECK_KINDS = {"clearance", "insertion", "support", "retention", "passage"}
 
@@ -123,7 +125,22 @@ def validate_installations(records, intent, part_ids, base_dir=None):
         if groups["retainerParts"]:
             free, stop = record.get("freeTravelMm"), record.get("stopTravelMm")
             if not _finite(free) or not _finite(stop) or not 0 <= free < stop:
-                errors.append(f"{path} retention requires 0 <= freeTravelMm < stopTravelMm")
+                errors.append(ContractIssue(
+                    f"{path} retention requires 0 <= freeTravelMm < stopTravelMm",
+                    rule_id="installation-retention-travel",
+                    field="freeTravelMm",
+                    subject_id=feature,
+                    feature_id=feature,
+                    actual={"freeTravelMm": free, "stopTravelMm": stop},
+                    expected="0 <= freeTravelMm < stopTravelMm",
+                    repair_hint=(
+                        f"Set {path}.freeTravelMm and {path}.stopTravelMm for "
+                        f"installation check {feature!r} so that "
+                        f"0 <= freeTravelMm < stopTravelMm; observed freeTravelMm="
+                        f"{free!r}, stopTravelMm={stop!r}. Keep the declared "
+                        "retention requirement and its retainer parts unchanged."
+                    ),
+                ))
     for feature in sorted(set(targets) - seen):
         errors.append(f"installationChecks missing intent feature {feature!r}")
     return errors

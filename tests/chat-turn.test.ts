@@ -7,6 +7,7 @@ import {
   emptyChatTurn,
   restoreChatTurn,
   startChatStep,
+  turnAccounting,
 } from '../src/lib/chat-turn.ts';
 import { chatStepLabel } from '../src/lib/chat-step-label.ts';
 import type { ChatStep } from '../src/types.ts';
@@ -81,6 +82,24 @@ test('restored chat turns reject malformed or unfinished persisted data', () => 
   assert.deepEqual(restoreChatTurn(legacyTurn), { ...turn, startedAt: 1 });
 });
 
+test('model failure and independent CAD evidence survive completion and restore', () => {
+  const started = startChatStep(emptyChatTurn(0), step('one', '构建'));
+  const cadResult = { runId: 'cad-run', report: { path: '/workspace/result.json', sha256: 'a'.repeat(64) },
+    status: 'awaiting-visual-review', pass: true, visualReviewRequired: true, inputsCurrent: true,
+    revision: 'revision-2', stages: { cadExport: { status: 'passed' }, visualReview: { status: 'pending' } } };
+  for (const code of ['model_output_limit', 'model_incomplete_response'] as const) {
+    const runtimeFailure = { code, eventIndex: 12, completionSeen: true, threadId: 'thread-1' };
+    const completed = completeChatTurn({ ...started, cadResult, runtimeFailure }, {
+      finishedAt: 10, replyText: '模型本轮未完成', status: 'failed',
+    });
+    assert.deepEqual(restoreChatTurn(completed), completed);
+    assert.equal(completed.cadResult?.visualReviewRequired, true);
+    assert.equal(restoreChatTurn({ ...completed, cadResult: { ...cadResult, pass: 'true' } }), undefined);
+    assert.equal(restoreChatTurn({ ...completed, runtimeFailure: { ...runtimeFailure, eventIndex: -1 } }), undefined);
+    assert.equal(restoreChatTurn({ ...completed, runtimeFailure: { ...runtimeFailure, code: 'unknown' } }), undefined);
+  }
+});
+
 test('localized step labels switch immediately and preserve legacy fallbacks', () => {
   const localized = {
     ...step('one', '正在分析'),
@@ -109,4 +128,104 @@ test('localized step labels switch immediately and preserve legacy fallbacks', (
     }),
     undefined,
   );
+});
+
+test('complete and restore keep one attempt of usage accounting', () => {
+  const accounting = turnAccounting({
+    attemptId: 'attempt-1',
+    model: 'openai/gpt-5.5',
+    outcome: 'completed',
+    taskType: 'cad',
+    usage: {
+      cacheWriteInputTokens: 3,
+      cachedInputTokens: 40,
+      inputTokens: 100,
+      outputTokens: 25,
+      reasoningOutputTokens: 9,
+    },
+  });
+  assert.deepEqual(accounting, {
+    attemptId: 'attempt-1',
+    model: 'openai/gpt-5.5',
+    outcome: 'completed',
+    taskType: 'cad',
+    usage: {
+      cacheWriteInputTokens: 3,
+      cachedInputTokens: 40,
+      inputTokens: 100,
+      outputTokens: 25,
+      reasoningOutputTokens: 9,
+    },
+    usageCoverage: 'full',
+    usageSource: 'sdk',
+  });
+
+  const started = startChatStep(emptyChatTurn(0), step('one', '生成模型'));
+  const completed = completeChatTurn(started, {
+    accounting,
+    finishedAt: 10,
+    replyText: '完成',
+    status: 'completed',
+  });
+  assert.deepEqual(completed.accounting, accounting);
+  assert.deepEqual(restoreChatTurn(completed), completed);
+
+  // A turn that already collected accounting keeps it when no new record is
+  // supplied, so a late rebuild cannot drop the ledger.
+  assert.deepEqual(
+    completeChatTurn({ ...started, accounting }, {
+      finishedAt: 11,
+      replyText: '完成',
+      status: 'completed',
+    }).accounting,
+    accounting,
+  );
+});
+
+test('accounting keeps partial and missing usage distinct from zero cost', () => {
+  assert.equal(
+    turnAccounting({
+      attemptId: 'a',
+      model: 'm',
+      outcome: 'failed',
+      taskType: 'chat',
+    }).usageCoverage,
+    'unavailable',
+  );
+  const partial = turnAccounting({
+    attemptId: 'a',
+    model: 'm',
+    outcome: 'cancelled',
+    taskType: 'chat',
+    usage: { inputTokens: 0, outputTokens: 0 },
+  });
+  assert.equal(partial.usageCoverage, 'partial');
+  assert.deepEqual(partial.usage, { inputTokens: 0, outputTokens: 0 });
+
+  const turn = {
+    finishedAt: 10,
+    replyText: '完成',
+    startedAt: 0,
+    steps: [{ ...step('one', '完成'), status: 'completed' as const }],
+    accounting: partial,
+  };
+  assert.deepEqual(restoreChatTurn(turn), turn);
+  assert.deepEqual(restoreChatTurn(turn)?.accounting?.usage, {
+    inputTokens: 0,
+    outputTokens: 0,
+  });
+  for (const broken of [
+    { ...partial, outcome: 'stopped' },
+    { ...partial, usageSource: 'estimated' },
+    { ...partial, usageCoverage: 'full' },
+    { ...partial, usage: { inputTokens: -1 } },
+    { ...partial, usage: { inputTokens: 1.5 } },
+    { ...partial, usage: {} },
+  ]) {
+    assert.equal(
+      restoreChatTurn({ ...turn, accounting: broken }),
+      undefined,
+      JSON.stringify(broken),
+    );
+  }
 });

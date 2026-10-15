@@ -1,5 +1,6 @@
 import { strict as assert } from 'node:assert';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -18,12 +19,61 @@ import {
   userSessionArtifacts,
 } from '../server/sessions.ts';
 import { writeUnifiedBuildFixture } from './unified-build-fixture.ts';
-import { fileSectionArtifacts } from '../src/lib/artifact-selection.ts';
+import { fileSectionArtifacts, printableArtifact } from '../src/lib/artifact-selection.ts';
+import {
+  completeChatTurn,
+  emptyChatTurn,
+  restoreChatTurn,
+  startChatStep,
+  turnAccounting,
+} from '../src/lib/chat-turn.ts';
+import type { ChatMessage } from '../src/types.ts';
 import { createArtifactArchive } from '../server/artifact-archive.ts';
+import { parameterModelsForWorkspace } from '../server/model-parameters.ts';
 
 const SESSION_ID = '3b0d4f25-1707-4cc8-92cf-6f5c28edfc93';
 
-test('shows only display and plate files from the current validated report', async () => {
+test('legacy STEP uses an explicit read-only adapter while a GLB-only result stays an attachment', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'amagine-old-step-'));
+  try {
+    const workspace = sessionWorkspaceRoot(root, SESSION_ID)!;
+    await mkdir(workspace, { recursive: true });
+    await writeUnifiedBuildFixture({ root: workspace, name: 'old', backend: 'brep-part', schema: 'evidence-a3d-build/v1' });
+    await writeFile(join(workspace, 'only.glb'), 'unchanged historical attachment');
+    const collection = await userSessionArtifacts(root, SESSION_ID);
+    const step = collection!.artifacts.find((artifact) => artifact.path === 'old.step');
+    assert.equal(step?.legacy, true);
+    assert.equal(step?.readOnly, true);
+    assert.equal(step?.status, 'diagnostic');
+    const old = collection!.artifacts.find((artifact) => artifact.path === 'only.glb');
+    assert.equal(old?.kind, 'other');
+    assert.equal(old?.format, undefined);
+    assert.ok(fileSectionArtifacts(collection!.artifacts).includes(old!));
+    assert.deepEqual(await parameterModelsForWorkspace(workspace, 'must-not-execute'), []);
+    await rm(join(workspace, 'old.py'));
+    await rm(join(workspace, 'old.stl'));
+    const recovered = await userSessionArtifacts(root, SESSION_ID);
+    assert.equal(recovered!.artifacts.find((artifact) => artifact.path === 'old.step')?.legacy, true);
+  } finally { await rm(root, { force: true, recursive: true }); }
+});
+
+test('discovers revision-scoped design outputs and classifies the design as editable source', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'amagine-design-artifacts-'));
+  try {
+    const workspace = sessionWorkspaceRoot(root, SESSION_ID)!;
+    const output = join(workspace, 'design-builds', 'revision');
+    await mkdir(output, { recursive: true });
+    await writeFile(join(workspace, 'model.a3d.json'), '{}');
+    await writeUnifiedBuildFixture({ backend: 'brep-part', name: 'body', root: output });
+    const collection = await userSessionArtifacts(root, SESSION_ID);
+    assert.equal(collection?.artifacts.find(({ path }) => path === 'model.a3d.json')?.kind, 'source');
+    assert.ok(collection?.artifacts.some(({ path, featured }) => path === 'design-builds/revision/body-display.step' && featured));
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test('shows CAD master, display and plate files from the current validated report', async () => {
   const root = await mkdtemp(join(tmpdir(), 'amagine-plate-files-'));
   try {
     const workspace = sessionWorkspaceRoot(root, SESSION_ID)!;
@@ -33,9 +83,9 @@ test('shows only display and plate files from the current validated report', asy
     const collection = await userSessionArtifacts(root, SESSION_ID);
     const visible = fileSectionArtifacts(collection!.artifacts);
     assert.deepEqual(visible.map(({ path }) => path), [
-      'pair-display.glb', 'pair-plate-01.3mf', 'pair-plate-01.stl', 'pair-plate-02.3mf', 'pair-plate-02.stl',
+      'pair-display.step', 'pair-assemble.step', 'pair-plate-01.3mf', 'pair-plate-01.stl', 'pair-plate-02.3mf', 'pair-plate-02.stl',
     ]);
-    assert.deepEqual(visible.map(({ plateId }) => plateId), [undefined, '01', '01', '02', '02']);
+    assert.deepEqual(visible.map(({ plateId }) => plateId), [undefined, undefined, '01', '01', '02', '02']);
     assert.ok(visible.every(({ buildId, modelId }) => buildId && modelId === 'pair'));
     assert.ok(collection!.artifacts.some(({ path, primary }) => path === 'pair-left.stl' && !primary));
     const download = await createArtifactArchive(workspace, visible.map(({ path }) => path));
@@ -43,7 +93,45 @@ test('shows only display and plate files from the current validated report', asy
     assert.deepEqual(Object.keys(unzipSync(download)).sort(), visible.map(({ path }) => path).sort());
     await writeUnifiedBuildFixture({ backend: 'brep-assembly', colored: true, name: 'pair', root: workspace, parts: ['left', 'right'] });
     const rebuilt = await userSessionArtifacts(root, SESSION_ID);
-    assert.deepEqual(fileSectionArtifacts(rebuilt!.artifacts).map(({ path }) => path), ['pair-display.glb', 'pair.3mf', 'pair.stl']);
+    assert.deepEqual(fileSectionArtifacts(rebuilt!.artifacts).map(({ path }) => path), ['pair-display.step', 'pair-assemble.step', 'pair.3mf', 'pair.stl']);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test('failed and stale plate outputs stay out of session print selection', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'amagine-stale-plates-'));
+  try {
+    const workspace = sessionWorkspaceRoot(root, SESSION_ID)!;
+    await mkdir(workspace, { recursive: true });
+    const fixture = await writeUnifiedBuildFixture({ backend: 'brep-assembly', name: 'pair', root: workspace,
+      parts: ['left', 'right'], plateParts: [['left'], ['right']] });
+    const source = join(workspace, 'build.py');
+    await writeFile(source, '# source');
+    const bind = async (path: string) => ({ path, sha256: createHash('sha256').update(await readFile(path)).digest('hex') });
+    const inputs = { source: await bind(source) };
+    const reportPath = join(workspace, 'compile-result.json');
+    const statePath = join(workspace, '.a3d-agent', 'state.json');
+    await mkdir(join(workspace, '.a3d-agent'), { recursive: true });
+    const writeRun = async (status: 'failed' | 'awaiting-visual-review', pass: boolean) => {
+      await writeFile(reportPath, JSON.stringify({ schema: 'evidence-cad-compile-result/v2', runId: 'plate-run', status, pass,
+        inputBindings: inputs, artifacts: fixture.report.artifacts }));
+      const reference = await bind(reportPath);
+      const run = { report: reference, inputs };
+      await writeFile(statePath, JSON.stringify({ schema: 'a3d-agent/v1', latest: run, runs: [run] }));
+    };
+    await writeRun('failed', false);
+    let collection = await userSessionArtifacts(root, SESSION_ID);
+    let plates = collection!.artifacts.filter((item) => item.path.includes('plate-'));
+    assert.equal(plates.length, 4);
+    assert.ok(plates.every((item) => item.purpose === 'internal-evidence' && !printableArtifact(item)));
+
+    await writeRun('awaiting-visual-review', true);
+    await writeFile(source, '# changed');
+    collection = await userSessionArtifacts(root, SESSION_ID);
+    plates = collection!.artifacts.filter((item) => item.path.includes('plate-'));
+    assert.equal(plates.length, 4);
+    assert.ok(plates.every((item) => item.inputsCurrent === false && item.purpose === 'internal-evidence' && !printableArtifact(item)));
   } finally {
     await rm(root, { force: true, recursive: true });
   }
@@ -166,7 +254,7 @@ test('trashes session metadata, workspace, and isolated Codex state together', a
   }
 });
 
-test('discovers only artifacts from the selected session and features its display GLB', async () => {
+test('discovers only artifacts from the selected session and features its display STEP', async () => {
   const root = await mkdtemp(join(tmpdir(), 'amagine-codex-artifacts-'));
   try {
     const selected = sessionWorkspaceRoot(root, SESSION_ID)!;
@@ -183,16 +271,78 @@ test('discovers only artifacts from the selected session and features its displa
     assert.equal(collection?.artifacts.some(({ name }) => name === 'other.stl'), false);
     assert.equal(
       collection?.artifacts.find(({ featured }) => featured)?.path,
-      'part-display.glb',
+      'part-display.step',
     );
     assert.deepEqual(
       collection?.artifacts
         .filter(({ primary }) => primary)
         .map(({ path }) => path)
         .sort(),
-      ['part-display.glb', 'part.stl'],
+      ['part-display.step', 'part.step', 'part.stl'],
     );
     assert.equal(sessionWorkspaceRoot(root, '../escape'), undefined);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test('keeps per-attempt usage accounting and reads legacy turns without it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'amagine-turn-accounting-'));
+  const sessionRoot = join(root, 'sessions');
+  try {
+    const accounting = turnAccounting({
+      attemptId: 'attempt-1',
+      model: 'openai/gpt-5.5',
+      outcome: 'failed',
+      taskType: 'cad',
+      usage: {
+        cacheWriteInputTokens: 3,
+        cachedInputTokens: 40,
+        inputTokens: 100,
+        outputTokens: 25,
+        reasoningOutputTokens: 9,
+      },
+    });
+    const turn = completeChatTurn(
+      startChatStep(emptyChatTurn(Date.now() - 2), {
+        id: 'step-1',
+        label: '正在生成 CAD 几何',
+        occurredAt: Date.now() - 1,
+        stage: 'command',
+        status: 'running',
+      }),
+      {
+        accounting,
+        finishedAt: Date.now(),
+        replyText: '本次执行失败，用量已记录。',
+        status: 'failed',
+      },
+    );
+    await appendSessionAssistantTurn(sessionRoot, SESSION_ID, turn);
+
+    const [restored] = (await readSessionMessages(
+      join(sessionRoot, `${SESSION_ID}.json`),
+    )).filter(
+      (message): message is Extract<ChatMessage, { role: 'assistant' }> =>
+        message.role === 'assistant',
+    );
+    assert.deepEqual(restored?.accounting, accounting);
+    const { id: _id, role: _role, ...turnBody } = restored;
+    assert.deepEqual(restoreChatTurn(restored), turnBody);
+
+    // Turns written before accounting existed stay readable and stay without it.
+    await appendSessionAssistantTurn(sessionRoot, SESSION_ID, {
+      finishedAt: Date.now(),
+      replyText: '旧回合',
+      startedAt: Date.now() - 1,
+      steps: [],
+    });
+    const messages = await readSessionMessages(
+      join(sessionRoot, `${SESSION_ID}.json`),
+    );
+    const legacy = messages.at(-1);
+    assert.equal(legacy?.role, 'assistant');
+    assert.equal('accounting' in (legacy ?? {}), false);
   } finally {
     await rm(root, { force: true, recursive: true });
   }

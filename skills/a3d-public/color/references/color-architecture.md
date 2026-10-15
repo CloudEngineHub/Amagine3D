@@ -88,7 +88,7 @@ display visual is not part of the purge plan.
 
 `export_regions()` checks region validity, overlap, parent coverage,
 cross-checks the intent's region names/colors, exports `NAME.stl`,
-`NAME.3mf`, `NAME.step`, `NAME-display.glb`, the material plan, and one unified
+`NAME.3mf`, `NAME.step`, `NAME-display.step`, the material plan, and one unified
 build manifest. It also writes hidden internal print-pose and semantic-pose
 region meshes; each is hash-bound in the manifest even though it is not a user
 deliverable.

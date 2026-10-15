@@ -20,6 +20,7 @@ const python =
   );
 
 const commands = {
+  agent: 'agent_api.py',
   capabilities: 'capability_manifest.py',
   compare: 'visual_compare.py',
   compile: 'cad_compile.py',
@@ -42,7 +43,7 @@ const guides = {
 - A single unpartitioned part gets one printable whole-part material assignment, not a false multicolor claim. Add more colors only as real volumetric regions with meaningful boundaries; never invent structural splits just to add color.
 - Whole-part BRep assignments are automatic in export_part()/export_assembly(); part_colors may verify declared assembly colors.
 - Multiple permanent regions in one BRep body: color.cad_helpers.export_regions().
-- Display-only color belongs only in the GLB and must not be claimed as printed color.
+- Display-only color belongs only in the display STEP scene and must not be claimed as printed color.
 - Treat 3MF as the preferred manufactured-color deliverable.
 Read $AMAGINE3D_RUNTIME_DIR/color/BACKEND.md only for multiple material regions inside one part or uncommon region topology.`,
   multipart: `Multipart construction
@@ -70,7 +71,7 @@ Read $AMAGINE3D_RUNTIME_DIR/references/multipart-connections.md only for direct 
 - For hollow lofts or dimensions that drift after finishing, read $AMAGINE3D_RUNTIME_DIR/references/surface-shell.md; adapt examples/surface_shell_build.py's build_geometry / measure_finished callbacks to the current source and station mapping.
 - Use simple sections and ruled or segmented lofts when the intended form permits coarser transitions; validate the solid and actual wall thickness.
 - Analytic profiles, extrusions, revolutions and sweeps remain appropriate for simpler geometry; construct cavities and mechanical interfaces in the same BRep body.
-- STL, 3MF and GLB meshes are derived exports. Autonomous mesh/SDF master authoring is not supported.
+- STL, 3MF and STEP meshes are derived exports. Autonomous mesh/SDF master authoring is not supported.
 - Clean orthographic evidence may drive constrained profiles and extrusions; pixel art may drive occupied-cell geometry or relief.
 - A photograph establishes envelope, landmarks and uncertainty; use them to define editable BRep controls.
 Choose from geometry requirements, not the product name or input file type.`,
@@ -191,7 +192,7 @@ function draftReplay(root, args) {
     if (!resultPath) continue;
     const result = jsonObject(resultPath);
     if (
-      result?.schema !== 'a3d-draft-result/v1' ||
+      result?.schema !== 'a3d-draft-result/v2' ||
       result.status !== 'draft' ||
       !UUID.test(result.runId ?? '') ||
       basename(dirname(resultPath)) !== result.runId ||
@@ -251,7 +252,7 @@ function compileReplay(root, args) {
   if (!resultPath || !inside(output, resultPath)) return null;
   const result = jsonObject(resultPath);
   if (
-    result?.schema !== 'evidence-cad-compile-result/v1' ||
+    result?.schema !== 'evidence-cad-compile-result/v2' ||
     result.pass !== true ||
     result.status !== 'awaiting-visual-review' ||
     result.visualReviewRequired !== true ||
@@ -267,7 +268,7 @@ function compileReplay(root, args) {
   const report = reportPath ? jsonObject(reportPath) : null;
   if (
     !profile ||
-    report?.schema !== 'evidence-a3d-build/v1' ||
+    report?.schema !== 'evidence-a3d-build/v2' ||
     report.runId !== result.runId ||
     report.pass !== true ||
     !bindingMatches(report.inputs?.source, source, root) ||
@@ -322,7 +323,30 @@ function help(usageLines = []) {
   console.log(`a3d — Amagine3D CAD command line
 
 Usage:
-${extraUsage}  a3d capabilities [--symbol NAME]... (query related symbols together)
+${extraUsage}  a3d agent context
+  a3d agent checkpoint '{"report":"RUN.json","sha256":"SHA","observations":["visual observation"],"todo":["next check"],"functionalReady":true}'
+  a3d agent display '{"report":"RUN.json","sha256":"SHA"}' (retry derived preview only)
+  a3d agent design '{"action":"read","design":"model.a3d.json"}'
+  a3d agent design --args-file DESIGN_EDITS.json (batched add/update/remove)
+  a3d agent capabilities '{"designOps":["box","pocket","fillet"]}'
+  a3d agent capabilities '{"symbols":["BuildSession","SelfTappingScrewPair.bind"]}'
+  a3d agent build '{"phase":"draft","source":"model_build.py"}'
+  a3d agent build '{"phase":"draft","design":"model.a3d.json","revision":"REVISION"}'
+  a3d agent build '{"phase":"compile","source":"model_build.py","intent":"model_intent.json","scene":"model_scene.json"}'
+  a3d agent build '{"phase":"compile","design":"model.a3d.json","revision":"REVISION","intent":"model_intent.json"}'
+  a3d agent inspect '{"report":"RESULT.json","field":"/inputBindings/source"}'
+  a3d agent validate '{"intent":"model_intent.json","source":"model_build.py"}'
+  a3d agent validate '{"design":"model.a3d.json","revision":"REVISION","intent":"model_intent.json"}'
+  a3d agent OP --args-file REQUEST.json (workspace JSON; avoids shell quoting)
+  Design names: box cylinder cone sphere torus; rectangle rounded_rectangle circle ellipse polygon regular_polygon slot;
+    line polyline arc face_from_path; extrude revolve loft; union cut intersect; translate rotate mirror;
+    linear_pattern polar_pattern placements; fillet chamfer pocket hole open_box; collar_socket self_tapping_screw installation.
+  Python compile needs a scene path (source may generate it); design compile generates scene automatically.
+  Query needed capability names together; results paginate by output size. fieldTypes describes complex arguments.
+  Design+intent validation checks owners, missing bindings, interfaces and whole-part color support before CAD runs.
+  After recovery, use context.nextInspect/nextDesignRead and saved capability reports.
+  Pass page.nextRequest to agent inspect for the next page; preserve output and exit status without head/tail.
+  a3d capabilities [--symbol NAME]... (query related symbols together)
   a3d diagnose COMPILE_RESULT.json [--id ID | --code CODE | --severity LEVEL] [--offset N --limit N]
   a3d diagnose COMPILE_RESULT.json --id ID --field FIELD [--offset N --limit N]
   a3d diagnose COMPILE_RESULT.json [selectors] [--field FIELD] --full
@@ -335,7 +359,7 @@ ${extraUsage}  a3d capabilities [--symbol NAME]... (query related symbols togeth
   a3d reference IMAGE [--out REPORT.json]
   a3d search QUERY [--max-results N] [--search-depth MODE] [--topic TOPIC] [--time-range RANGE] [--answer MODE]
   a3d draft SOURCE.py [--intent INTENT.json] [--timeout-seconds 120]
-  a3d measure MODEL.step [--section-z MM] [--section-x MM] [--section-y MM] [--out FILE]
+  a3d measure MODEL.step [--section-z MM] [--section-x MM] [--section-y MM] [--preview] [--out FILE]
   a3d compare BEFORE AFTER --view front [--out FILE] [--report FILE]
   a3d compile SCENE.json --intent INTENT.json --source BUILD.py [--output-dir DIR] [--marker FILE]
 
@@ -656,8 +680,8 @@ function diagnose(args) {
   } catch (error) {
     fail(`Compile result is not valid JSON: ${error.message}`);
   }
-  if (payload?.schema !== 'evidence-cad-compile-result/v1' || !Array.isArray(payload.issues)) {
-    fail('File is not an evidence-cad-compile-result/v1 document.');
+  if (payload?.schema !== 'evidence-cad-compile-result/v2' || !Array.isArray(payload.issues)) {
+    fail('File is not an evidence-cad-compile-result/v2 document.');
   }
   const issues = payload.issues.filter((issue) =>
     Object.entries(filters).every(([key, value]) => issue?.[key] === value),

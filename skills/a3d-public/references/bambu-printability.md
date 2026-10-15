@@ -41,11 +41,11 @@ another positive limit). Each plate is exported and audited independently:
 `name-plate-01.3mf` / `.stl`, `name-plate-02.3mf` / `.stl`, etc. Single-plate
 exports retain `name.3mf` / `.stl`. The report's `backendData.printPlates` maps
 each manufactured part to exactly one plate; the legacy `printPlate` and
-`artifacts.stl` / `artifacts.3mf` refer to the first plate. STEP and display GLB
+`artifacts.stl` / `artifacts.3mf` refer to the first plate. STEP and display STEP
 retain the assembled geometry. Individual part STLs remain internal QA inputs;
 the product file list exposes the display model and plate files only.
 A failed export keeps
-hash-bound semantic STEP/GLB and a diagnostic preview where generation succeeds,
+hash-bound semantic STEP and a diagnostic preview where generation succeeds,
 without declaring manufacture complete. Use that evidence to improve packing
 or plan the required export work, keeping the selected printer and target form.
 
@@ -72,7 +72,7 @@ then audit `<name>.stl` as the arranged print-bed layout and use
 `<name>-plate-NN.stl` and its corresponding 3MF. Every printed STL that leaves the
 helper is in print coordinates with `Z-min = 0`; every `NAME-PART.step` and the
 required `NAME-assemble.step` preserve physical mating positions, while
-`NAME-display.glb` preserves the display model instead of acting as
+`NAME-display.step` preserves the display model instead of acting as
 printability evidence.
 
 ## BRep enclosure shells

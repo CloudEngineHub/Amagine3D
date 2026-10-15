@@ -239,7 +239,7 @@ class CapabilityManifestTests(unittest.TestCase):
         self.assertNotIn("hybrid", {
             mode["id"] for mode in manifest["authoring"]["artifactModes"]
         })
-        self.assertTrue({"STL", "display GLB"}.issubset({
+        self.assertTrue({"STL", "display STEP"}.issubset({
             output
             for mode in manifest["authoring"]["artifactModes"]
             for output in mode["outputs"]

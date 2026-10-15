@@ -148,7 +148,9 @@ export function FilesPanel({
                   <span>{artifact.plateId
                     ? text(`${artifact.modelId ?? ''} · Plate ${Number(artifact.plateId)} · ${artifact.format?.toUpperCase()}`,
                       `${artifact.modelId ?? ''} · 第 ${Number(artifact.plateId)} 盘 · ${artifact.format?.toUpperCase()}`)
-                    : artifact.name}</span>
+                    : artifact.name}{artifact.legacy && artifact.kind === 'other' ? text(' · historical attachment; STEP required for preview', ' · 历史附件，预览需 STEP') : artifact.inputsCurrent === false ? text(' · previous revision', ' · 上一版')
+                      : artifact.status === 'draft' ? text(' · draft', ' · 草稿')
+                      : artifact.status === 'failed' ? text(' · unresolved checks', ' · 未通过项') : ''}</span>
                 </button>
               </li>
             ))}

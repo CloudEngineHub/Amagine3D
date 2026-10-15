@@ -1,0 +1,580 @@
+{
+  "schema": "a3d-design/v1",
+  "units": {
+    "length": "mm",
+    "angle": "deg"
+  },
+  "params": {
+    "locator_gap": {
+      "type": "length",
+      "value": 0.3,
+      "range": [
+        0.1,
+        0.6
+      ]
+    },
+    "pilot_diameter": {
+      "type": "length",
+      "value": 2.6,
+      "range": [
+        2.3,
+        2.9
+      ]
+    },
+    "retainer_gap": {
+      "type": "length",
+      "value": 0.2,
+      "range": [
+        0.1,
+        0.4
+      ]
+    }
+  },
+  "frames": {
+    "joint": {
+      "origin": [
+        0,
+        5,
+        30
+      ],
+      "u": [
+        1,
+        0,
+        0
+      ],
+      "normal": [
+        0,
+        -1,
+        0
+      ]
+    },
+    "corner-1": {
+      "origin": [
+        -33,
+        5,
+        7
+      ],
+      "u": [
+        1,
+        0,
+        0
+      ],
+      "normal": [
+        0,
+        -1,
+        0
+      ]
+    },
+    "corner-2": {
+      "origin": [
+        -33,
+        5,
+        53
+      ],
+      "u": [
+        1,
+        0,
+        0
+      ],
+      "normal": [
+        0,
+        -1,
+        0
+      ]
+    },
+    "corner-3": {
+      "origin": [
+        33,
+        5,
+        7
+      ],
+      "u": [
+        1,
+        0,
+        0
+      ],
+      "normal": [
+        0,
+        -1,
+        0
+      ]
+    },
+    "corner-4": {
+      "origin": [
+        33,
+        5,
+        53
+      ],
+      "u": [
+        1,
+        0,
+        0
+      ],
+      "normal": [
+        0,
+        -1,
+        0
+      ]
+    }
+  },
+  "connections": {
+    "cover-location": {
+      "op": "collar_socket",
+      "frame": "@frames.joint",
+      "size": [
+        54,
+        34
+      ],
+      "radius": 3,
+      "engagement": 2,
+      "wall": 1.8,
+      "clearance": "=locator_gap",
+      "malePart": "cover",
+      "femalePart": "frame",
+      "maleFeature": "cover-collar",
+      "femaleFeature": "frame-locator"
+    },
+    "corner-1": {
+      "op": "self_tapping_screw",
+      "frame": "@frames.corner-1",
+      "interface": "cover-fastening",
+      "coverPart": "cover",
+      "receiverPart": "frame",
+      "clearanceFeature": "cover-corner-1",
+      "pilotFeature": "frame-corner-1-pilot",
+      "bossFeature": "frame-corner-1-boss",
+      "coverThickness": 3,
+      "locators": [
+        "cover-location"
+      ],
+      "pilotDiameter": "=pilot_diameter"
+    },
+    "corner-2": {
+      "op": "self_tapping_screw",
+      "frame": "@frames.corner-2",
+      "interface": "cover-fastening",
+      "coverPart": "cover",
+      "receiverPart": "frame",
+      "clearanceFeature": "cover-corner-2",
+      "pilotFeature": "frame-corner-2-pilot",
+      "bossFeature": "frame-corner-2-boss",
+      "coverThickness": 3,
+      "locators": [
+        "cover-location"
+      ],
+      "pilotDiameter": "=pilot_diameter"
+    },
+    "corner-3": {
+      "op": "self_tapping_screw",
+      "frame": "@frames.corner-3",
+      "interface": "cover-fastening",
+      "coverPart": "cover",
+      "receiverPart": "frame",
+      "clearanceFeature": "cover-corner-3",
+      "pilotFeature": "frame-corner-3-pilot",
+      "bossFeature": "frame-corner-3-boss",
+      "coverThickness": 3,
+      "locators": [
+        "cover-location"
+      ],
+      "pilotDiameter": "=pilot_diameter"
+    },
+    "corner-4": {
+      "op": "self_tapping_screw",
+      "frame": "@frames.corner-4",
+      "interface": "cover-fastening",
+      "coverPart": "cover",
+      "receiverPart": "frame",
+      "clearanceFeature": "cover-corner-4",
+      "pilotFeature": "frame-corner-4-pilot",
+      "bossFeature": "frame-corner-4-boss",
+      "coverThickness": 3,
+      "locators": [
+        "cover-location"
+      ],
+      "pilotDiameter": "=pilot_diameter"
+    }
+  },
+  "assets": {
+    "module": {
+      "op": "installation",
+      "part": "frame",
+      "feature": "module-space",
+      "envelope": "@frame.module",
+      "insertion": "@frame.insertion",
+      "passage": "@frame.optical",
+      "obstacles": [
+        "frame"
+      ],
+      "supports": [
+        "frame"
+      ],
+      "retainers": [
+        "cover"
+      ],
+      "passageParts": [
+        "frame"
+      ],
+      "withdrawalAxis": [
+        0,
+        1,
+        0
+      ],
+      "supportDirection": [
+        0,
+        -1,
+        0
+      ],
+      "freeTravel": "=retainer_gap - mm(0.05)",
+      "stopTravel": "=retainer_gap + mm(0.05)",
+      "displayFeature": "module-reference"
+    }
+  },
+  "parts": {
+    "frame": {
+      "features": [
+        {
+          "id": "body_blank",
+          "op": "box",
+          "size": [
+            80,
+            13,
+            60
+          ]
+        },
+        {
+          "id": "body",
+          "op": "translate",
+          "input": "@frame.body_blank",
+          "offset": [
+            0,
+            -1.5,
+            30
+          ],
+          "requirement": "frame-body"
+        },
+        {
+          "id": "space_blank",
+          "op": "box",
+          "size": [
+            52,
+            10,
+            32
+          ]
+        },
+        {
+          "id": "space",
+          "op": "translate",
+          "input": "@frame.space_blank",
+          "offset": [
+            0,
+            1,
+            30
+          ]
+        },
+        {
+          "id": "cavity",
+          "op": "cut",
+          "body": "@frame.body",
+          "tools": [
+            "@frame.space"
+          ],
+          "requirement": "module-space"
+        },
+        {
+          "id": "window_blank",
+          "op": "box",
+          "size": [
+            44,
+            5.1,
+            24
+          ]
+        },
+        {
+          "id": "window",
+          "op": "translate",
+          "input": "@frame.window_blank",
+          "offset": [
+            0,
+            -6.45,
+            30
+          ]
+        },
+        {
+          "id": "viewing",
+          "op": "cut",
+          "body": "@frame.cavity",
+          "tools": [
+            "@frame.window"
+          ],
+          "requirement": "viewing-window"
+        },
+        {
+          "id": "socket",
+          "op": "cut",
+          "body": "@frame.viewing",
+          "tools": [
+            "@connections.cover-location:socket"
+          ],
+          "requirement": "frame-locator"
+        },
+        {
+          "id": "pilot_1",
+          "op": "cut",
+          "body": "@frame.socket",
+          "tools": [
+            "@connections.corner-1:pilot"
+          ],
+          "requirement": "frame-corner-1-pilot"
+        },
+        {
+          "id": "boss_1",
+          "op": "translate",
+          "input": "@connections.corner-1:boss",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "requirement": "frame-corner-1-boss"
+        },
+        {
+          "id": "pilot_2",
+          "op": "cut",
+          "body": "@frame.pilot_1",
+          "tools": [
+            "@connections.corner-2:pilot"
+          ],
+          "requirement": "frame-corner-2-pilot"
+        },
+        {
+          "id": "boss_2",
+          "op": "translate",
+          "input": "@connections.corner-2:boss",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "requirement": "frame-corner-2-boss"
+        },
+        {
+          "id": "pilot_3",
+          "op": "cut",
+          "body": "@frame.pilot_2",
+          "tools": [
+            "@connections.corner-3:pilot"
+          ],
+          "requirement": "frame-corner-3-pilot"
+        },
+        {
+          "id": "boss_3",
+          "op": "translate",
+          "input": "@connections.corner-3:boss",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "requirement": "frame-corner-3-boss"
+        },
+        {
+          "id": "pilot_4",
+          "op": "cut",
+          "body": "@frame.pilot_3",
+          "tools": [
+            "@connections.corner-4:pilot"
+          ],
+          "requirement": "frame-corner-4-pilot"
+        },
+        {
+          "id": "boss_4",
+          "op": "translate",
+          "input": "@connections.corner-4:boss",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "requirement": "frame-corner-4-boss"
+        },
+        {
+          "id": "module_blank",
+          "op": "box",
+          "size": [
+            50,
+            5,
+            30
+          ]
+        },
+        {
+          "id": "module",
+          "op": "translate",
+          "input": "@frame.module_blank",
+          "offset": [
+            0,
+            -1.5,
+            30
+          ]
+        },
+        {
+          "id": "insertion_blank",
+          "op": "box",
+          "size": [
+            50,
+            17,
+            30
+          ]
+        },
+        {
+          "id": "insertion",
+          "op": "translate",
+          "input": "@frame.insertion_blank",
+          "offset": [
+            0,
+            4.5,
+            30
+          ]
+        },
+        {
+          "id": "optical_blank",
+          "op": "box",
+          "size": [
+            44,
+            9,
+            24
+          ]
+        },
+        {
+          "id": "optical",
+          "op": "translate",
+          "input": "@frame.optical_blank",
+          "offset": [
+            0,
+            -5.5,
+            30
+          ]
+        }
+      ],
+      "result": "@frame.pilot_4"
+    },
+    "cover": {
+      "features": [
+        {
+          "id": "body_blank",
+          "op": "box",
+          "size": [
+            80,
+            3,
+            60
+          ]
+        },
+        {
+          "id": "body",
+          "op": "translate",
+          "input": "@cover.body_blank",
+          "offset": [
+            0,
+            6.5,
+            30
+          ],
+          "requirement": "cover-body"
+        },
+        {
+          "id": "collar",
+          "op": "union",
+          "body": "@cover.body",
+          "tools": [
+            "@connections.cover-location:male"
+          ],
+          "requirement": "cover-collar"
+        },
+        {
+          "id": "pad_0_blank",
+          "op": "box",
+          "size": [
+            4,
+            "=mm(4) - retainer_gap",
+            20
+          ]
+        },
+        {
+          "id": "pad_0",
+          "op": "translate",
+          "input": "@cover.pad_0_blank",
+          "offset": [
+            -23,
+            "=mm(3) + retainer_gap/2",
+            30
+          ]
+        },
+        {
+          "id": "pad_1_blank",
+          "op": "box",
+          "size": [
+            4,
+            "=mm(4) - retainer_gap",
+            20
+          ]
+        },
+        {
+          "id": "pad_1",
+          "op": "translate",
+          "input": "@cover.pad_1_blank",
+          "offset": [
+            23,
+            "=mm(3) + retainer_gap/2",
+            30
+          ]
+        },
+        {
+          "id": "pads",
+          "op": "union",
+          "body": "@cover.collar",
+          "tools": [
+            "@cover.pad_0",
+            "@cover.pad_1"
+          ],
+          "requirement": "module-retainers"
+        },
+        {
+          "id": "clearance_1",
+          "op": "cut",
+          "body": "@cover.pads",
+          "tools": [
+            "@connections.corner-1:clearance"
+          ],
+          "requirement": "cover-corner-1"
+        },
+        {
+          "id": "clearance_2",
+          "op": "cut",
+          "body": "@cover.clearance_1",
+          "tools": [
+            "@connections.corner-2:clearance"
+          ],
+          "requirement": "cover-corner-2"
+        },
+        {
+          "id": "clearance_3",
+          "op": "cut",
+          "body": "@cover.clearance_2",
+          "tools": [
+            "@connections.corner-3:clearance"
+          ],
+          "requirement": "cover-corner-3"
+        },
+        {
+          "id": "clearance_4",
+          "op": "cut",
+          "body": "@cover.clearance_3",
+          "tools": [
+            "@connections.corner-4:clearance"
+          ],
+          "requirement": "cover-corner-4"
+        }
+      ],
+      "result": "@cover.clearance_4"
+    }
+  }
+}

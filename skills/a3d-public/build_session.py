@@ -122,12 +122,25 @@ class BuildSession:
     @contextmanager
     def _transaction(self):
         working = deepcopy(self._evidence)
-        with cad_helpers._evidence_scope(working):
-            yield working
-            # Compile mode can return an unchanged body with a deferred error.
-            # Emit the existing diagnostic before rolling back, never hide it.
-            cad_helpers._raise_deferred_source_issues()
+        try:
+            with cad_helpers._evidence_scope(working):
+                yield working
+                # A failed edit must remain failed even if its prior geometry renders.
+                cad_helpers._raise_deferred_source_issues()
+        except Exception:
+            self._preview_failed_construction()
+            raise
         self._commit_evidence(working)
+
+    def _preview_failed_construction(self) -> None:
+        if not self.is_draft or not self._parts or (self.out_dir / "draft-geometry.json").exists():
+            return
+        try:
+            from cad_draft import export_draft
+            export_draft(self._parts, diagnostic=True)
+        except Exception:
+            # A preview is optional evidence; never replace the original failure.
+            pass
 
     def _check_new_feature(self, feature_id: str, part_name: str | None) -> None:
         self._check_mutation()

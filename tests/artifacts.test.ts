@@ -24,7 +24,7 @@ test('discovers supported artifacts and keeps newest files first', async () => {
     await writeFile(join(root, 'canonical_model.mjs'), 'export const size = 10;');
     await writeFile(join(root, 'companion_scene.json'), '{}');
     await writeFile(join(root, 'part.stl'), 'solid part\nendsolid part\n');
-    await writeFile(join(root, 'part-display.glb'), 'glb');
+    await writeFile(join(root, 'part-display.step'), 'step');
     await writeFile(join(root, 'part-assemble.step'), 'step');
     await writeFile(join(root, '.ignored.json'), '{}');
 
@@ -32,12 +32,12 @@ test('discovers supported artifacts and keeps newest files first', async () => {
     assert.equal(artifacts.length, 6);
     assert.equal(artifacts.find(({ name }) => name === 'part.stl')?.format, 'stl');
     assert.equal(
-      artifacts.find(({ name }) => name === 'part-display.glb')?.format,
-      'glb',
+      artifacts.find(({ name }) => name === 'part-display.step')?.format,
+      'step',
     );
     assert.equal(
       artifacts.find(({ name }) => name === 'part-assemble.step')?.format,
-      undefined,
+      'step',
     );
     assert.equal(artifacts.find(({ name }) => name === 'part.py')?.kind, 'source');
     assert.equal(
@@ -68,4 +68,17 @@ test('artifact resolution rejects traversal outside the workspace', async () => 
   } finally {
     await rm(root, { force: true, recursive: true });
   }
+});
+
+test('historical GLB stays downloadable as an attachment and is never a preview model', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'amagine-historical-attachment-'));
+  try {
+    await writeFile(join(root, 'historical.glb'), 'original bytes');
+    const [artifact] = await scanArtifacts(root);
+    assert.equal(artifact?.kind, 'other');
+    assert.equal(artifact?.format, undefined);
+    assert.equal(artifact?.legacy, true);
+    assert.equal(artifact?.readOnly, true);
+    assert.ok(await resolveArtifactPath(root, 'historical.glb'));
+  } finally { await rm(root, { force: true, recursive: true }); }
 });

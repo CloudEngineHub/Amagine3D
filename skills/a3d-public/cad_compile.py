@@ -39,15 +39,18 @@ from build_manifest import file_binding_errors
 from coordinate_frames import transform_bounds, validated_rigid_matrix
 from freshness_check import stable_file_snapshot
 from intent_contract import validate as validate_intent
-from intent_revision import IntentRevisionError, audit_lineage, history_path, load_history, semantic_diff
+from intent_revision import IntentRevisionError, audit_lineage, history_path, lineage_issue, load_history, semantic_diff
 from scene_contract import validate as validate_scene
 from source_preflight import audit as audit_source
 
 
-RESULT_SCHEMA = "evidence-cad-compile-result/v1"
+RESULT_SCHEMA = "evidence-cad-compile-result/v2"
 AGENT_SUMMARY_SCHEMA = "a3d-compile-summary/v1"
-BUILD_SCHEMA = "evidence-a3d-build/v1"
+BUILD_SCHEMA = "evidence-a3d-build/v2"
 REPAIR_STATE_SCHEMA = "evidence-cad-repair-state/v1"
+ISSUE_IDENTITY_VERSION = "evidence-cad-issue-identity/v2"
+ISSUE_IDENTITY_ANCHORS = ("causeId", "featureId", "nodeId", "interfaceId", "offenderId", "target", "part", "field", "ruleId", "subjectId")
+GENERIC_ISSUE_CHECKS = {"authoring"}
 SOURCE_DIAGNOSTICS_SCHEMA = "evidence-cad-source-diagnostics/v1"
 MODEL_NAME = re.compile(r"[a-z0-9]+(?:[-_][a-z0-9]+)*")
 MAX_ISSUES = 40
@@ -63,8 +66,7 @@ AGENT_ARTIFACT_KEYS = {
     "diagnosticReferencePreview",
     "diagnosticRenderEvidence",
     "diagnosticStep",
-    "diagnosticGlb",
-    "diagnosticSourceEvidence",
+        "diagnosticSourceEvidence",
     "log",
     "preview",
     "referencePreview",
@@ -547,7 +549,7 @@ def _report_agent_facts(report: dict[str, Any]) -> dict[str, Any]:
     if isinstance(artifacts, dict):
         for key, reference in artifacts.items():
             is_deliverable = (
-                key in {"3mf", "glb:display", "stl"}
+                key in {"3mf", "step:display", "stl"}
                 or key.startswith("step:")
                 or key.startswith("stl:")
             )
@@ -558,7 +560,7 @@ def _report_agent_facts(report: dict[str, Any]) -> dict[str, Any]:
                 and ".amagine3d-internal" not in path
             ):
                 deliverables[key] = path
-        display = artifacts.get("glb:display")
+        display = artifacts.get("step:display")
         readback = display.get("readbackBaseColors") if isinstance(display, dict) else None
         if isinstance(readback, dict):
             colors = {
@@ -941,6 +943,12 @@ def _repair_hint(code: str) -> str:
             "Correct the mutable scene implementation while preserving every "
             "immutable intent target, owner, landmark, and representation master."
         )
+    if code.startswith("AUTHORING."):
+        return (
+            "Fix the named field in the Agent-authored source or declaration to "
+            "match its stated rule, legal values, or range, and keep every "
+            "immutable intent target; do not relax the check or edit targets to pass."
+        )
     if code.startswith("SOURCE."):
         return (
             "Repair the Agent-authored source at the failing construct; preserve "
@@ -1009,6 +1017,10 @@ def _issue(
     repair_hint: str | None = None,
     details: dict[str, Any] | None = None,
 ) -> None:
+    from cad_diagnostics import contract_issue
+    structured = contract_issue(message) or {}
+    details = {**structured, **(details or {})}
+    repair_hint = repair_hint or structured.get("repairHint")
     if (not repair_hint and code == "QA.STEP_FAILED" and isinstance(check, str)
             and re.fullmatch(r"section:[^:]+:\d+:(?:width_u_mm|depth_v_mm)", check)):
         repair_hint = (
@@ -1053,9 +1065,11 @@ def _issue(
         "ownerBounds",
         "ownerPartId",
         "path",
+        "ruleId",
         "scope",
         "causeId",
         "status",
+        "subjectId",
         "target",
     }
     for key, value in (details or {}).items():
@@ -1202,7 +1216,7 @@ def _check_details(payload: dict[str, Any], name: str) -> dict[str, Any]:
     for record in checks:
         if not isinstance(record, dict):
             continue
-        identity = record.get("name", record.get("check", record.get("code")))
+        identity = record.get("name", record.get("check", record.get("id", record.get("code"))))
         if identity == name:
             return record
     return {}
@@ -1467,7 +1481,7 @@ def _run_json_check(
                         stage=name,
                         message=f"automated check failed: {message}",
                         check=check if isinstance(check, str) else None,
-                        part=part,
+                        part=details.get("part", part),
                         details=details,
                     )
             else:
@@ -1634,7 +1648,7 @@ def _validate_diagnostic_candidate(
     if not _binding_matches(scene.get("intentRef"), expected_inputs["intent"][0], scene_path.parent):
         raise ValueError("diagnostic scene references a different intent")
     published: dict[str, dict] = {}
-    for key, field, suffix in (("step", "diagnosticStep", ".step"), ("glb", "diagnosticGlb", ".glb"), ("preview", "diagnosticPreview", ".png")):
+    for key, field, suffix in (("step", "diagnosticStep", ".step"), ("preview", "diagnosticPreview", ".png")):
         reference = artifacts.get(key)
         if not isinstance(reference, dict) or not isinstance(reference.get("path"), str):
             raise ValueError(f"diagnostic {key} artifact is missing")
@@ -1757,6 +1771,27 @@ def _compile_deadline_exceeded(result: dict[str, Any]) -> bool:
     )
 
 
+def _has_specific_identity(issue: dict[str, Any]) -> bool:
+    """Whether the diagnostic already names one concrete rule and its object.
+
+    A generic check name or a bare document root is not a problem identity:
+    two independent failures can share both and still be different problems.
+    """
+
+    if any(issue.get(name) is not None for name in ISSUE_IDENTITY_ANCHORS):
+        return True
+    check = issue.get("check")
+    if (
+        isinstance(check, str)
+        and check.strip()
+        and check.strip() not in GENERIC_ISSUE_CHECKS
+    ):
+        return True
+    path = issue.get("path")
+    # A dotted or indexed path names a field; "scene" or "intent" names a document.
+    return isinstance(path, str) and bool(re.search(r"[.\[]", path))
+
+
 def _issue_identity(issue: dict[str, Any]) -> str:
     """Return a stable identity for comparing one diagnostic across attempts."""
 
@@ -1771,6 +1806,9 @@ def _issue_identity(issue: dict[str, Any]) -> str:
         "offenderId",
         "target",
         "path",
+        "field",
+        "ruleId",
+        "subjectId",
     )
     identity = {
         field: issue[field]
@@ -1790,16 +1828,16 @@ def _issue_identity(issue: dict[str, Any]) -> str:
                 for item in offenders if isinstance(item, dict)
             }, key=str),
         }
-    if not any(field in identity for field in identity_fields[2:]):
-        if not issue.get("causeId"):
-            # Tracebacks and run prefixes change without changing the exception.
-            lines = str(issue.get("message", "")).strip().splitlines()
-            message = lines[-1].strip() if lines else ""
-            message = re.sub(r"\b[0-9a-f]{8}-[0-9a-f-]{27,}\b", "<run>", message, flags=re.I)
-            message = re.sub(r"\b\d{4}-\d{2}-\d{2}[T ][0-9:.+-]+(?:Z| UTC)?", "<time>", message)
-            message = re.sub(r"0x[0-9a-fA-F]+", "<address>", message)
-            message = re.sub(r"\bline \d+\b", "line <n>", message)
-            identity["message"] = message
+    if not issue.get("causeId") and not _has_specific_identity(issue):
+        # Only a coarse diagnostic needs the message to separate two findings,
+        # and then only its final exception line without volatile run details.
+        lines = str(issue.get("message", "")).strip().splitlines()
+        message = lines[-1].strip() if lines else ""
+        message = re.sub(r"\b[0-9a-f]{8}-[0-9a-f-]{27,}\b", "<run>", message, flags=re.I)
+        message = re.sub(r"\b\d{4}-\d{2}-\d{2}[T ][0-9:.+-]+(?:Z| UTC)?", "<time>", message)
+        message = re.sub(r"0x[0-9a-fA-F]+", "<address>", message)
+        message = re.sub(r"\bline \d+\b", "line <n>", message)
+        identity["message"] = message
     payload = json.dumps(
         identity,
         sort_keys=True,
@@ -1817,6 +1855,14 @@ def _aggregate_issues(issues: list[dict]) -> list[dict]:
         if key not in groups:
             groups[key] = {**issue, "id": issue_id, "occurrenceCount": 0, "affectedParts": [], "affectedStages": []}
         group = groups[key]
+        # A shared cause can have different semantic/plate frames or measured
+        # values. Share its explanation while retaining every distinct impact.
+        impact = {field: issue[field] for field in ("stage", "part", "observed", "actual", "expected", "coordinateFrame", "scope") if field in issue}
+        original = {field: group[field] for field in impact if field in group}
+        if impact != original:
+            impacts = group.setdefault("impacts", [original])
+            if impact not in impacts:
+                impacts.append(impact)
         group["occurrenceCount"] += 1
         for source, target in (("part", "affectedParts"), ("stage", "affectedStages")):
             if issue.get(source) is not None and issue[source] not in group[target]:
@@ -1836,6 +1882,9 @@ def _repair_issue_record(issue: dict[str, Any]) -> dict[str, Any]:
         "featureId",
         "nodeId",
         "interfaceId",
+        "field",
+        "ruleId",
+        "subjectId",
         "blockedBy",
         "affectedParts",
         "affectedStages",
@@ -2052,6 +2101,9 @@ def _write_repair_state(
         intent_hash=intent_hash,
         lineage=result.get("intentRevision"),
     )
+    identity_comparable = previous is None or (
+        previous.get("issueIdentityVersion") == ISSUE_IDENTITY_VERSION
+    )
 
     error_issues = [
         issue
@@ -2096,8 +2148,9 @@ def _write_repair_state(
         previous and previous.get("intentHash") != intent_hash
         and target_changed
     )
-    disappeared = (previous_failed | previous_blocked) - current_failed - current_blocked
-    if not changed_scope:
+    if identity_comparable:
+        disappeared = (previous_failed | previous_blocked) - current_failed - current_blocked
+    if identity_comparable and not changed_scope:
         evaluated_stages = {
             stage.get("name") for stage in result.get("stages", [])
             if isinstance(stage, dict) and stage.get("status") in {"pass", "fail"}
@@ -2124,23 +2177,40 @@ def _write_repair_state(
                 blocked.append({**record, "blockedBy": "NOT_REEVALUATED"})
                 current_blocked.add(issue_id)
         disappeared -= current_blocked
-    # Changed requirements are not evidence that the previous defect was fixed.
-    scope_changed = disappeared if changed_scope else set()
-    resolved = disappeared - scope_changed
-    known_resolved.update(resolved)
-    delta = {
-        "new": sorted(
-            current_failed
-            - previous_failed
-            - previous_blocked
-            - known_resolved
-        ),
-        "newlyUnblocked": sorted(current_failed & previous_blocked),
-        "regressed": sorted(current_failed & known_resolved),
-        "remaining": sorted(current_failed & previous_failed),
-        "resolved": sorted(resolved),
-        "scope_changed": sorted(scope_changed),
-    }
+    if not identity_comparable:
+        # Ids written by another identity algorithm cannot show progress.
+        # Start a new comparison baseline and say so instead of inventing
+        # resolutions, regressions, or newly appeared problems.
+        known_resolved = set()
+        scope_changed = set()
+        delta = {
+            "identityComparable": False,
+            "new": [],
+            "newlyUnblocked": [],
+            "regressed": [],
+            "remaining": [],
+            "resolved": [],
+            "scope_changed": [],
+        }
+    else:
+        # Changed requirements are not evidence that the previous defect was fixed.
+        scope_changed = disappeared if changed_scope else set()
+        resolved = disappeared - scope_changed
+        known_resolved.update(resolved)
+        delta = {
+            "identityComparable": True,
+            "new": sorted(
+                current_failed
+                - previous_failed
+                - previous_blocked
+                - known_resolved
+            ),
+            "newlyUnblocked": sorted(current_failed & previous_blocked),
+            "regressed": sorted(current_failed & known_resolved),
+            "remaining": sorted(current_failed & previous_failed),
+            "resolved": sorted(resolved),
+            "scope_changed": sorted(scope_changed),
+        }
     state = {
         "blocked": blocked,
         "delta": delta,
@@ -2149,6 +2219,7 @@ def _write_repair_state(
         "intentPath": str(intent_path.resolve()),
         "intentSnapshot": current_snapshot,
         "intentLineage": result.get("intentRevision"),
+        "issueIdentityVersion": ISSUE_IDENTITY_VERSION,
         "model": result.get("model"),
         "workspace": str(Path(result.get("inputs", {}).get("workspace", result_path.parent)).resolve()),
         "knownScopeChangedIssueIds": sorted(set((previous or {}).get("knownScopeChangedIssueIds", [])) | scope_changed),
@@ -2180,6 +2251,13 @@ def _finish(
     result_path: Path,
     log_path: Path,
 ) -> dict[str, Any]:
+    stage_path = Path(result.pop("_cadStagePath", result_path.parent / (str(result.get("model")) + "_cad-stage.json")))
+    if stage_path.is_file():
+        try:
+            from cad_stages import attach_cad_stage
+            attach_cad_stage(result, stage_path, result["inputs"]["workspace"], result["runId"])
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            _issue(result, code="CAD.STAGE_REJECTED", stage="cad-export", severity="warning", message=error)
     result["finishedAt"] = _utc_now()
     result["issueOccurrences"] = result["issues"]
     result["issues"] = _aggregate_issues(result["issues"])
@@ -2187,11 +2265,26 @@ def _finish(
         issue.get("severity") == "error" for issue in result["issues"]
     ) or result.get("omittedErrorCount", 0) > 0
     rendered = "renderEvidence" in result["artifacts"]
-    result["pass"] = not has_errors and rendered
-    result["status"] = (
-        "awaiting-visual-review" if result["pass"] else "failed"
-    )
+    manufacturing_complete = result.pop("_manufacturingComplete", False)
+    manufacturing_failed = any(issue.get("severity") == "error" and issue.get("stage") != "render"
+                               for issue in result["issues"]) or result.get("omittedErrorCount", 0) > 0
+    manufacturing_passed = manufacturing_complete and not manufacturing_failed
+    result["pass"] = not has_errors and rendered and manufacturing_passed
+    result["status"] = ("awaiting-visual-review" if result["pass"] else
+                        "awaiting-preview" if manufacturing_passed and not rendered else "failed")
     result["visualReviewRequired"] = True
+    if "artifactStages" in result:
+        result["artifactStages"]["manufacturing"] = {"status": "passed" if manufacturing_passed else "failed" if manufacturing_complete else "pending"}
+        result["artifactStages"]["preview"] = {"status": "passed" if rendered else "failed" if any(i.get("stage") == "render" and i.get("severity") == "error" for i in result["issues"]) else "pending"}
+        if result.get("cadStage"):
+            from cad_stages import write
+            stage_document = json.loads(stage_path.read_text(encoding="utf-8"))
+            stage_document["stages"] = result["artifactStages"]
+            write(stage_path, stage_document)
+            result["cadStage"] = _artifact(stage_path)
+    if result["status"] == "awaiting-preview":
+        result["retryDisplay"] = {"operation": "display", "report": str(result_path),
+                                "reason": "Manufacturing checks passed; retry the STEP preview without rebuilding geometry."}
     if log_path.is_file():
         result["artifacts"]["log"] = _artifact(log_path)
     try:
@@ -2220,8 +2313,7 @@ def _finish(
                 "diagnosticReferencePreview",
                 "diagnosticRenderEvidence",
                 "diagnosticStep",
-                "diagnosticGlb",
-                "diagnosticSourceEvidence",
+                                "diagnosticSourceEvidence",
                 "freshnessAudit",
                 "log",
                 "preview",
@@ -2347,6 +2439,7 @@ def compile_cad(
         "inputBindingPolicy": "stable-inputs-per-compile/v1",
         "issues": [],
         "model": model,
+        "_cadStagePath": str(output_dir / f"{model}_cad-stage.json"),
         "omittedErrorCount": 0,
         "intentRevision": {"verified": False},
         "omittedIssueCount": 0,
@@ -2361,10 +2454,12 @@ def compile_cad(
     # the old result pointer, including failures during contract validation.
     try:
         prior_history = load_history(workspace, model)
-        if prior_history.get("headHash") and not history_path(workspace, model).exists():
+        if prior_history.get("headHash"):
             _write_json(history_path(workspace, model), prior_history)
     except (OSError, ValueError, KeyError, TypeError) as error:
-        _issue(result, code="CONTRACT.INTENT_HISTORY_UNVERIFIED", stage="intent-revision", message=error)
+        problem = lineage_issue(error)
+        _issue(result, code="CONTRACT.INTENT_HISTORY_UNVERIFIED", stage="intent-revision", message=error,
+               repair_hint=problem["repairHint"], details=problem)
         return _finish(result, result_path=result_path, log_path=log_path)
 
     capability_path = output_dir / f"{model}_capabilities.json"
@@ -2431,7 +2526,9 @@ def compile_cad(
     except (OSError, ValueError, KeyError, TypeError) as error:
         if isinstance(error, IntentRevisionError) and error.verified_history:
             _write_json(history_path(workspace, model), error.verified_history)
-        _issue(result, code="CONTRACT.INTENT_REVISION_UNVERIFIED", stage="intent-revision", message=error)
+        problem = lineage_issue(error)
+        _issue(result, code=problem["code"], stage="intent-revision", message=error,
+               repair_hint=problem["repairHint"], details=problem)
         return _finish(result, result_path=result_path, log_path=log_path)
 
     source_preflight = audit_source(source_path)
@@ -2471,6 +2568,7 @@ def compile_cad(
             "AMAGINE3D_COMPILE_RUN_ID": run_id,
             "AMAGINE3D_SCENE_PATH": str(scene_path),
             "AMAGINE3D_SOURCE_PHASE": "compile",
+            "AMAGINE3D_CAD_SOURCE_PATH": str(source_path),
             "AMAGINE3D_SOURCE_DIAGNOSTICS_PATH": str(source_diagnostics_path),
             "PYTHONPATH": str(Path(__file__).resolve().parent)
             + (
@@ -2486,6 +2584,15 @@ def compile_cad(
     if source_command.timed_out or source_command.returncode != 0:
         structured_errors = 0
         source_diagnostics = None
+        cad_stage_path = output_dir / f"{model}_cad-stage.json"
+        if cad_stage_path.exists() and not source_command.timed_out and not changed_inputs:
+            try:
+                from cad_stages import attach_cad_stage
+                cad_document = attach_cad_stage(result, cad_stage_path, workspace, run_id)
+                _, stage_errors = _record_structured_issues(result, cad_document, stage="display", default_code="DISPLAY.EXPORT_FAILED")
+                structured_errors += stage_errors
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                _issue(result, code="CAD.STAGE_REJECTED", stage="cad-export", severity="warning", message=error)
         if source_diagnostics_path.exists():
             try:
                 payload = _load_json(source_diagnostics_path, "source diagnostics")
@@ -2498,7 +2605,8 @@ def compile_cad(
                 ):
                     raise ValueError("source diagnostics are not bound to this compile attempt")
                 result["artifacts"]["sourceDiagnostics"] = _artifact(source_diagnostics_path)
-                _, structured_errors = _record_structured_issues(result, payload, stage="source", default_code="SOURCE.EXECUTION_FAILED")
+                _, source_errors = _record_structured_issues(result, payload, stage="source", default_code="SOURCE.EXECUTION_FAILED")
+                structured_errors += source_errors
                 source_diagnostics = payload
                 if "diagnosticCandidate" in payload and intent_unchanged and not source_command.timed_out:
                     try:
@@ -2673,10 +2781,10 @@ def compile_cad(
 
     # Render only current, validated source/scene/report geometry, before QA.
     # The diagnostic bundle never replaces the last successful render pointer.
-    display_reference = artifacts.get("glb:display")
+    display_reference = artifacts.get("step:display")
     try:
         display_path = _resolve_reference(
-            display_reference, report_dir, "glb:display"
+            display_reference, report_dir, "step:display"
         )
     except ValueError as error:
         _issue(
@@ -2751,6 +2859,8 @@ def compile_cad(
                     and item.get("sha256") == display_hash
                     for item in bound_meshes
                 )
+                sources = render_evidence.get("sourceScenes", [])
+                scene_bound = any(item.get("step", {}).get("sha256") == display_hash and item.get("scene") == display_reference.get("scene") for item in sources if isinstance(item, dict))
                 preview_reference = render_evidence.get("preview")
                 preview_bound = (
                     isinstance(preview_reference, dict)
@@ -2767,14 +2877,15 @@ def compile_cad(
                     and matched_reference.get("sha256") == _digest(staged_reference)
                 )
                 if (
-                    render_evidence.get("schema") != "evidence-render/v2"
+                    render_evidence.get("schema") != "evidence-render/v3"
                     or display_reference.get("sha256") != display_hash
                     or not bound
+                    or not scene_bound
                     or not preview_bound
                     or not matched_bound
                 ):
                     raise ValueError(
-                        "render evidence is not hash-bound to the current display GLB and previews"
+                        "render evidence is not hash-bound to the current display STEP and previews"
                     )
                 _publish_render_bundle(
                     staged_preview=staged_preview,
@@ -2887,8 +2998,48 @@ def compile_cad(
         if _compile_deadline_exceeded(result):
             return _finish(result, result_path=result_path, log_path=log_path)
 
+    # Compare independently reread CAD against the actual print exports.
+    # Invert the recorded print pose once to compare in semantic coordinates.
+    try:
+        from copy import deepcopy
+        import numpy as np
+        comparison_scene = deepcopy(scene)
+        def absolute_refs(value):
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    if (key == "sourceStep" or (key == "path" and "sha256" in value)) and isinstance(item, str) and not Path(item).is_absolute():
+                        value[key] = str((scene_path.parent / item).resolve())
+                    else:
+                        absolute_refs(item)
+            elif isinstance(value, list):
+                for item in value: absolute_refs(item)
+        absolute_refs(comparison_scene)
+        for part in comparison_scene["parts"]:
+            part_id = part["id"]
+            pose = report["coordinateFrames"]["part-print"]["partTransforms"][part_id]
+            part["artifacts"] = {
+                "masterStep": {**artifacts["step:" + part_id], "revision": scene["revision"], "scale": 1.0},
+                "manufacturingStl": {**artifacts["stl:" + part_id], "revision": scene["revision"], "scale": 1.0,
+                                     "toCanonicalTransform": np.linalg.inv(np.asarray(pose)).tolist()},
+            }
+            for ref in part["artifacts"].values():
+                ref.pop("coordinateFrame", None)
+        comparison_path = output_dir / f"{model}_step-print-scene.json"
+        _write_json(comparison_path, comparison_scene)
+        result["artifacts"]["stepPrintScene"] = _artifact(comparison_path)
+        _run_json_check(result, runner, deadline, name="shape-consistency",
+            argv=[sys.executable, str(Path(__file__).resolve().with_name("shape_consistency.py")),
+                  "--manifest", str(comparison_path), "--sample-count", str(options.consistency_samples)],
+            cwd=workspace, timeout_seconds=options.check_timeout_seconds,
+            output_path=output_dir / f"{model}_shape-consistency.json", artifact_name="shapeConsistency",
+            failure_code="QA.SHAPE_CONSISTENCY_FAILED", expected_schema="evidence-shape-consistency-manifest/v2")
+    except Exception as error:
+        _issue(result, code="QA.SHAPE_CONSISTENCY_FAILED", stage="shape-consistency", message=error)
+    if _compile_deadline_exceeded(result):
+        return _finish(result, result_path=result_path, log_path=log_path)
+
     for artifact_key in sorted(
-        key for key in artifacts if key.startswith("step:")
+        key for key in artifacts if key.startswith("step:") and key != "step:display"
     ):
         token = artifact_key.removeprefix("step:")
         step_path = _resolve_reference(artifacts[artifact_key], report_dir, artifact_key)
@@ -2972,7 +3123,7 @@ def compile_cad(
         if _compile_deadline_exceeded(result):
             return _finish(result, result_path=result_path, log_path=log_path)
 
-    if any(issue["severity"] == "error" for issue in result["issues"]):
+    if any(issue["severity"] == "error" and issue.get("stage") != "render" for issue in result["issues"]):
         return _finish(result, result_path=result_path, log_path=log_path)
 
     for warning in report.get("warnings", []):
@@ -3045,6 +3196,16 @@ def compile_cad(
                 message="; ".join(freshness_errors),
             )
     _record_changed_inputs(result, stage="input-binding")
+    visual_keys = {"step:display", "preview", "referencePreview", "renderEvidence", "diagnosticPreview", "diagnosticReferencePreview", "diagnosticRenderEvidence"}
+    current_binding_errors = file_binding_errors({**report, "artifacts": {k: v for k, v in report["artifacts"].items() if k not in visual_keys}}, report_dir)
+    current_binding_errors.extend(file_binding_errors({"artifacts": {k: v for k, v in result["artifacts"].items() if k not in visual_keys}}, workspace))
+    if current_binding_errors:
+        _issue(result, code="BUILD.BINDINGS_CHANGED", stage="artifact-binding", message="; ".join(current_binding_errors))
+    visual_binding_errors = file_binding_errors({"artifacts": {k: v for k, v in report["artifacts"].items() if k in visual_keys}}, report_dir)
+    visual_binding_errors.extend(file_binding_errors({"artifacts": {k: v for k, v in result["artifacts"].items() if k in visual_keys}}, workspace))
+    if visual_binding_errors:
+        _issue(result, code="VISUAL.RENDER_EVIDENCE_INVALID", stage="render", message="; ".join(visual_binding_errors))
+    result["_manufacturingComplete"] = True
     if (
         not any(issue["severity"] == "error" for issue in result["issues"])
         and result.get("omittedErrorCount", 0) == 0

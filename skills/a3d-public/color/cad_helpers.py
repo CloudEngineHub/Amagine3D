@@ -24,10 +24,10 @@ from cad_diagnostics import (
     CadDiagnosticError,
     source_diagnostics_payload,
 )
-from display_glb import (
-    DisplayGlbError,
+from display_step import (
+    DisplayStepError,
     appearance as display_appearance,
-    export_display_glb,
+    export_display_step,
     load_display_components,
 )
 from geometry_binding import (
@@ -510,7 +510,7 @@ def _orientation_candidates(
             float(box.max.Z - box.min.Z),
         ]
         # The fit scale is diagnostic repair evidence only.  Applying it here
-        # would make the print artifact a different object from STEP/GLB and
+        # would make the print artifact a different object from STEP and
         # silently change every wall, clearance, and interface dimension.
         scale_fit = _uniform_scale_to_fit_profile(dimensions, profile)
         scaled_box = box
@@ -938,6 +938,23 @@ def export_regions(
     if not assembly_record["valid"]:
         raise RegionInvariantError("assembly manufacturing geometry is invalid")
 
+    from cad_stages import artifact_stage, persist_cad_geometry
+    from copy import deepcopy
+    cad_children, cad_steps, cad_objects = [], {}, []
+    for region_name, (shape, color) in normalized.items():
+        copy = deepcopy(shape)
+        copy.parent = None
+        copy.label = region_name
+        copy.color = Color(*_rgb(color))
+        cad_children.append(copy)
+        key = "object:" + region_name
+        cad_steps[key] = (copy, output / ".cad-color-objects" / (region_name + ".step"))
+        cad_objects.append({"name": region_name, "ownerPart": name, "role": "manufactured", "stepArtifact": key,
+                            "geometry": export_geometry_record(shape), "appearance": display_appearance(color)})
+    cad_steps["step:" + name] = (Compound(children=cad_children), output / f"{name}.step")
+    (output / ".cad-color-objects").mkdir(parents=True, exist_ok=True)
+    cad_stage = persist_cad_geometry(output, name, cad_steps, cad_objects)
+
     print_orientation = _select_print_orientation(
         assembly_body,
         profile,
@@ -1044,40 +1061,37 @@ def export_regions(
     for region_name, (shape, color) in normalized.items():
         shape.color = Color(*_rgb(color))
         shape.label = region_name
+        shape._a3d_display_owner_part = name
+        shape._a3d_display_region_id = region_name
         children.append(shape)
     assembly_shape = Compound(children=children)
     report["assembly"] = {"shape": _shape_record(assembly_shape)}
     assemble_step_path = output / f"{name}.step"
-    display_glb_path = output / f"{name}-display.glb"
-    export_step(assembly_shape, str(assemble_step_path), unit=Unit.MM)
+    display_step_path = output / f"{name}-display.step"
     try:
         display_components = load_display_components(scene_data, scene_path)
-        display_nodes = export_display_glb(
-            (
+        with artifact_stage(cad_stage, "display"):
+            display_nodes = export_display_step(
                 (
-                    region_name,
-                    shape_to_mesh(
+                    (
+                        region_name,
                         shape,
-                        f"display geometry {region_name}",
-                        linear_tolerance_mm=0.01,
-                        angular_tolerance_rad=0.1,
-                    ),
-                    display_appearance(color),
-                )
-                for region_name, (shape, color) in normalized.items()
-            ),
-            display_glb_path,
-            display_items=display_components,
-        )
-    except (DisplayGlbError, GeometryBindingError) as error:
+                        display_appearance(color),
+                    )
+                    for region_name, (shape, color) in normalized.items()
+                ),
+                display_step_path,
+                display_items=display_components,
+            )
+    except (DisplayStepError, GeometryBindingError) as error:
         raise RegionInvariantError(str(error)) from error
     artifacts[f"step:{name}"] = {
         "path": str(assemble_step_path.resolve()),
         "sha256": _digest(assemble_step_path),
     }
-    artifacts["glb:display"] = {
-        "path": str(display_glb_path.resolve()),
-        "sha256": _digest(display_glb_path),
+    artifacts["step:display"] = {
+        "path": str(display_step_path.resolve()),
+        "sha256": _digest(display_step_path),
         **display_nodes,
     }
 
@@ -1129,8 +1143,8 @@ def export_regions(
                     export_geometry_record(assembly_shape),
                 )
             },
-            glb=(
-                display_glb_path,
+            display_step=(
+                display_step_path,
                 [*normalized, *[node_id for node_id, _, _ in display_components]],
             ),
         )
@@ -1147,7 +1161,7 @@ def export_regions(
     transform_matrix = report["manufacturing"]["transform"]["matrix"]
     manifest_artifacts = {}
     for key, record in artifacts.items():
-        if key == f"step:{name}" or key == "glb:display":
+        if key == f"step:{name}" or key == "step:display":
             frame = "semantic"
         elif key == f"stl:{name}":
             frame = "part-print"
@@ -1190,7 +1204,7 @@ def export_regions(
         "artifactMatrix": {
             "parts": {
                 name: {
-                    "glb": "required",
+                    "displayStep": "required",
                     "step": "required",
                     "stl": "required",
                     "threeMf": "required",
@@ -1235,7 +1249,7 @@ def export_regions(
         "revision": scene_data["revision"],
         "runId": new_run_id(),
         "scale": 1.0,
-        "schema": "evidence-a3d-build/v1",
+        "schema": "evidence-a3d-build/v2",
         "warnings": [],
     }
     manifest_errors = validate_manifest(report)
