@@ -121,9 +121,9 @@ def export_draft(parts: Mapping[str, Any], *, references: Mapping[str, Any] | No
     stage = persist_cad_geometry(output, "draft", steps, records)
     items = [(name, shape, appearance(color)) for name, shape, color in display_shapes]
     with artifact_stage(stage, "display"):
-        export_display_step([item for item in items if item[0] in parts], step,
-                           display_items=[item for item in items if item[0] in references],
-                           metadata={"status": "draft", "runId": run_id}, reuse_step=True)
+        display = export_display_step([item for item in items if item[0] in parts], step,
+                                      display_items=[item for item in items if item[0] in references],
+                                      metadata={"status": "draft", "runId": run_id}, reuse_step=True)
     with artifact_stage(stage, "tessellation"):
         render_inputs = _render_inputs(step, DEFAULT_MATERIAL)
     with artifact_stage(stage, "preview"):
@@ -136,7 +136,7 @@ def export_draft(parts: Mapping[str, Any], *, references: Mapping[str, Any] | No
               "runId": run_id, "units": "mm", "coordinateSystem": {"handedness": "right", "up": "Z"},
               "objects": records,
               "constructionFeatures": construction_records, "constructionFeatureScope": CONSTRUCTION_FEATURE_SCOPE,
-              "artifacts": {"step": _binding(step), "preview": _binding(preview)}}
+              "artifacts": {"step": {**_binding(step), "scene": display["scene"]}, "preview": _binding(preview)}}
     _write_json(manifest_path, result)
     return result
 
@@ -150,8 +150,22 @@ def _validated_geometry(output: Path, run_id: str, *, status: str) -> dict:
         raise ValueError("source did not emit current draft geometry")
     for kind, filename in (("step", "draft.step"), ("preview", "draft-preview.png")):
         path = _workspace_path(output, Path(filename), f"draft {kind}", must_exist=True)
-        if manifest["artifacts"].get(kind) != _binding(path):
+        ref = manifest["artifacts"].get(kind)
+        if not isinstance(ref, dict) or any(ref.get(key) != value for key, value in _binding(path).items()):
             raise ValueError(f"draft {kind} does not match its recorded bytes")
+        if kind == "step" and ref.get("scene"):
+            scene_ref = ref["scene"]
+            scene_path = _workspace_path(output, Path(scene_ref["path"]), "draft STEP scene", must_exist=True)
+            if _binding(scene_path) != {key: scene_ref[key] for key in ("path", "sha256")}:
+                raise ValueError("draft STEP scene does not match its recorded bytes")
+            descriptor = json.loads(scene_path.read_text(encoding="utf-8"))
+            if descriptor.get("schema") != "a3d-step-display/v1" or descriptor.get("step") != _binding(path):
+                raise ValueError("draft STEP scene does not match its model")
+            for item in descriptor.get("objects", []):
+                object_ref = item.get("step", {})
+                object_path = _workspace_path(output, Path(object_ref["path"]), "draft STEP object", must_exist=True)
+                if _binding(object_path) != {key: object_ref[key] for key in ("path", "sha256")}:
+                    raise ValueError("draft STEP object does not match its recorded bytes")
     _construction_features(manifest.get("constructionFeatures", {}),
                            {item["name"] for item in manifest["objects"] if item["role"] == "proposed-part"})
     if manifest.get("constructionFeatureScope", CONSTRUCTION_FEATURE_SCOPE) != CONSTRUCTION_FEATURE_SCOPE:

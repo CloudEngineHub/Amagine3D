@@ -1,5 +1,6 @@
 import { strict as assert } from 'node:assert';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -18,7 +19,7 @@ import {
   userSessionArtifacts,
 } from '../server/sessions.ts';
 import { writeUnifiedBuildFixture } from './unified-build-fixture.ts';
-import { fileSectionArtifacts } from '../src/lib/artifact-selection.ts';
+import { fileSectionArtifacts, printableArtifact } from '../src/lib/artifact-selection.ts';
 import {
   completeChatTurn,
   emptyChatTurn,
@@ -93,6 +94,44 @@ test('shows CAD master, display and plate files from the current validated repor
     await writeUnifiedBuildFixture({ backend: 'brep-assembly', colored: true, name: 'pair', root: workspace, parts: ['left', 'right'] });
     const rebuilt = await userSessionArtifacts(root, SESSION_ID);
     assert.deepEqual(fileSectionArtifacts(rebuilt!.artifacts).map(({ path }) => path), ['pair-display.step', 'pair-assemble.step', 'pair.3mf', 'pair.stl']);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test('failed and stale plate outputs stay out of session print selection', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'amagine-stale-plates-'));
+  try {
+    const workspace = sessionWorkspaceRoot(root, SESSION_ID)!;
+    await mkdir(workspace, { recursive: true });
+    const fixture = await writeUnifiedBuildFixture({ backend: 'brep-assembly', name: 'pair', root: workspace,
+      parts: ['left', 'right'], plateParts: [['left'], ['right']] });
+    const source = join(workspace, 'build.py');
+    await writeFile(source, '# source');
+    const bind = async (path: string) => ({ path, sha256: createHash('sha256').update(await readFile(path)).digest('hex') });
+    const inputs = { source: await bind(source) };
+    const reportPath = join(workspace, 'compile-result.json');
+    const statePath = join(workspace, '.a3d-agent', 'state.json');
+    await mkdir(join(workspace, '.a3d-agent'), { recursive: true });
+    const writeRun = async (status: 'failed' | 'awaiting-visual-review', pass: boolean) => {
+      await writeFile(reportPath, JSON.stringify({ schema: 'evidence-cad-compile-result/v2', runId: 'plate-run', status, pass,
+        inputBindings: inputs, artifacts: fixture.report.artifacts }));
+      const reference = await bind(reportPath);
+      const run = { report: reference, inputs };
+      await writeFile(statePath, JSON.stringify({ schema: 'a3d-agent/v1', latest: run, runs: [run] }));
+    };
+    await writeRun('failed', false);
+    let collection = await userSessionArtifacts(root, SESSION_ID);
+    let plates = collection!.artifacts.filter((item) => item.path.includes('plate-'));
+    assert.equal(plates.length, 4);
+    assert.ok(plates.every((item) => item.purpose === 'internal-evidence' && !printableArtifact(item)));
+
+    await writeRun('awaiting-visual-review', true);
+    await writeFile(source, '# changed');
+    collection = await userSessionArtifacts(root, SESSION_ID);
+    plates = collection!.artifacts.filter((item) => item.path.includes('plate-'));
+    assert.equal(plates.length, 4);
+    assert.ok(plates.every((item) => item.inputsCurrent === false && item.purpose === 'internal-evidence' && !printableArtifact(item)));
   } finally {
     await rm(root, { force: true, recursive: true });
   }

@@ -210,26 +210,27 @@ export async function readCadRunArtifacts(workspace: string): Promise<ArtifactSu
         for (const [key, raw] of Object.entries(declared)) {
           try {
           const legacyAttachment = doc.schema.endsWith('/v1') && ['glb', 'glb:display'].includes(key);
-          if (!legacyAttachment && !['step:display', 'step', 'stl', '3mf', 'preview', 'diagnosticPreview'].includes(key) && !key.startsWith('step:') && !/^(?:stl|3mf):plate:/u.test(key)) continue;
+          const platePrint = /^plate:\d+:(?:stl|3mf)$/u.test(key);
+          if (!legacyAttachment && !['step:display', 'step', 'stl', '3mf', 'preview', 'diagnosticPreview'].includes(key) && !key.startsWith('step:') && !platePrint) continue;
           const ref = raw as { path: string; sha256: string };
           const { path } = await bound(ref);
           const local = relative(root, path).split(sep).join('/');
           // Run evidence cannot promote arbitrary internal STL/3MF to print packages.
           const display = key === 'step:display' && /\.st(?:ep|p)$/iu.test(path);
           const step = cadVerified && (key === 'step' || key.startsWith('step:')) && /\.st(?:ep|p)$/iu.test(path);
-          const print = (key === 'stl' || key === '3mf' || /^(?:stl|3mf):plate:/u.test(key)) && /\.(?:stl|3mf)$/iu.test(path);
+          const print = (key === 'stl' || key === '3mf' || platePrint) && /\.(?:stl|3mf)$/iu.test(path);
           const image = ['preview', 'diagnosticPreview'].includes(key) && /\.png$/iu.test(path);
           if (!display && !step && !print && !image && !legacyAttachment) continue;
           if (artifacts.has(local)) continue;
           const meta = await stat(path);
           artifacts.set(local, { kind: legacyAttachment ? 'other' : image ? 'image' : 'model', name: local.split('/').at(-1)!, path: local,
             url: `/api/artifacts/file?path=${encodeURIComponent(local)}`, size: meta.size,
-            modifiedAt: meta.mtime.toISOString(), primary: display || (step ? key === cadMasterKey : image ? ['preview', 'diagnosticPreview'].includes(key) : status === 'validated'), buildId: doc.runId,
+            modifiedAt: meta.mtime.toISOString(), primary: display || (step ? key === cadMasterKey : image ? ['preview', 'diagnosticPreview'].includes(key) : status === 'validated' && current), buildId: doc.runId,
             ...(doc.artifactStages?.manufacturing?.status ? { manufacturingStatus: doc.artifactStages.manufacturing.status } : {}),
             ...(doc.schema.endsWith('/v1') ? { legacy: true, readOnly: true } : {}),
             ...(revision ? { revision } : {}), inputsCurrent: current, status, sha256: ref.sha256,
             ...(previewImagePath && (display || step) ? { previewImagePath } : {}),
-            purpose: display ? status === 'validated' ? 'display-preview' : status === 'draft' ? 'draft-preview' : 'diagnostic-preview' : step ? 'cad-model' : print ? status === 'validated' ? 'print-package' : 'internal-evidence'
+            purpose: display ? status === 'validated' ? 'display-preview' : status === 'draft' ? 'draft-preview' : 'diagnostic-preview' : step ? 'cad-model' : print ? status === 'validated' && current ? 'print-package' : 'internal-evidence'
               : status === 'validated' ? 'display-preview' : status === 'draft' ? 'draft-preview' : 'diagnostic-preview',
             ...(display || step ? { format: 'step' as const } : print ? { format: path.endsWith('.3mf') ? '3mf' as const : 'stl' as const } : {}),
           });

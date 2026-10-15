@@ -500,6 +500,101 @@ export_draft({'body': Box(10, 10, 10)})
                 self.assertFalse(agent_api.dispatch(self.root, "build", args)["reused"])
         self.assertEqual(len(calls), 3)
 
+    def test_source_dependencies_track_imported_package_children_and_relative_imports(self):
+        source = self.root / "model.py"
+        package = self.root / "dimensions"
+        package.mkdir()
+        (package / "__init__.py").write_text("")
+        child = package / "controls.py"
+        child.write_text("WIDTH = 10\n")
+        source.write_text("from dimensions import controls\n")
+        found = agent_api.source_dependencies(self.root, source, [])
+        self.assertIn("dependency:dimensions/__init__.py", found)
+        self.assertIn("dependency:dimensions/controls.py", found)
+        source.write_text("from .dimensions import controls\n")
+        (self.root / "__init__.py").write_text("")
+        found = agent_api.source_dependencies(self.root, source, [])
+        self.assertIn("dependency:dimensions/controls.py", found)
+
+        namespace = self.root / "pkg" / "sub"
+        namespace.mkdir(parents=True)
+        (namespace.parent / "__init__.py").write_text("")
+        (namespace / "controls.py").write_text("WIDTH = 12\n")
+        nested_source = namespace / "model.py"
+        nested_source.write_text("from . import controls\n")
+        found = agent_api.source_dependencies(self.root, nested_source, [])
+        self.assertIn("dependency:pkg/__init__.py", found)
+        self.assertIn("dependency:pkg/sub/controls.py", found)
+
+        # Namespace packages are valid local imports even without __init__.py.
+        (package / "__init__.py").unlink()
+        source.write_text("from dimensions import controls\n")
+        found = agent_api.source_dependencies(self.root, source, [])
+        self.assertIn("dependency:dimensions/controls.py", found)
+
+    def test_declared_import_dependency_is_recursively_scanned(self):
+        source = self.root / "model.py"
+        source.write_text("import controls\n")
+        controls = self.root / "controls.py"
+        controls.write_text("import dimensions.controls\n")
+        package = self.root / "dimensions"
+        package.mkdir()
+        (package / "controls.py").write_text("WIDTH = 10\n")
+        found = agent_api.source_dependencies(self.root, source, ["controls.py"])
+        self.assertIn("dependency:controls.py", found)
+        self.assertIn("dependency:dimensions/controls.py", found)
+
+    def test_compile_cache_binds_rich_display_scene_and_object_files(self):
+        import cad_compile
+        source, intent, semantic_scene = [self.root / name for name in ("build.py", "intent.json", "scene.json")]
+        output, display_scene, object_step = [self.root / name for name in ("final.step", "display.scene.json", "object.step")]
+        build_report_path = self.root / "build-evidence.json"
+        source.write_text("# source")
+        intent.write_text(json.dumps({"part": "model"}))
+        calls = []
+
+        def compile(_options):
+            from intent_revision import audit_lineage, history_path
+            calls.append(1)
+            history, _ = audit_lineage(self.root, intent, json.loads(intent.read_text()))
+            agent_api.save(self.root, history_path(self.root, "model").name, history)
+            semantic_scene.write_text("{}")
+            output.write_text("STEP")
+            object_step.write_text("OBJECT STEP")
+            descriptor = {"schema": "a3d-step-display/v1", "step": protocol.binding(output),
+                          "objects": [{"step": protocol.binding(object_step)}]}
+            display_scene.write_text(json.dumps(descriptor))
+            rich_step = {**protocol.binding(output), "scene": protocol.binding(display_scene)}
+            agent_api.save(self.root, "build-evidence.json",
+                {"schema": "evidence-a3d-build/v2", "artifacts": {"step": rich_step}})
+            value = {"schema": cad_compile.RESULT_SCHEMA, "runId": str(len(calls)),
+                     "status": "awaiting-visual-review", "pass": True, "visualReviewRequired": True,
+                     "inputBindings": {"source": protocol.binding(source)}, "issues": [],
+                     "artifacts": {"buildReport": protocol.binding(build_report_path)}, "deliverables": {"step": str(output)}}
+            path = agent_api.save(self.root, "model_compile-result.json", value)
+            return {"runId": value["runId"], "result": {"path": str(path)}}
+
+        args = {"phase": "compile", "source": source.name, "intent": intent.name, "scene": semantic_scene.name}
+        with mock.patch.object(cad_compile, "compile_cad", side_effect=compile):
+            first = agent_api.dispatch(self.root, "build", args)
+            self.assertFalse(first["reused"])
+            outputs = agent_api.state(self.root)["latest"]["outputs"]
+            self.assertEqual(outputs["step"]["scene"], protocol.binding(display_scene))
+            self.assertEqual(outputs["buildReport"], protocol.binding(build_report_path))
+            self.assertTrue(agent_api.dispatch(self.root, "build", args)["reused"])
+            self.assertEqual(len(calls), 1)
+            build_report_path.write_text(build_report_path.read_text() + " ")
+            self.assertFalse(agent_api.dispatch(self.root, "build", args)["reused"])
+            object_step.write_text("changed object")
+            self.assertFalse(agent_api.dispatch(self.root, "build", args)["reused"])
+            object_step.unlink()
+            self.assertFalse(agent_api.dispatch(self.root, "build", args)["reused"])
+            display_scene.write_text(display_scene.read_text() + " ")
+            self.assertFalse(agent_api.dispatch(self.root, "build", args)["reused"])
+            display_scene.unlink()
+            self.assertFalse(agent_api.dispatch(self.root, "build", args)["reused"])
+        self.assertEqual(len(calls), 6)
+
     def test_compile_uses_full_saved_result_and_checks_profile_scene_and_outputs(self):
         import cad_compile
         source, intent, profile, scene, output = [self.root / name for name in
@@ -595,6 +690,16 @@ export_draft({'body': Box(10, 10, 10)})
         second = json.loads(self.cli("build", {"phase": "draft", "source": "model.py"}).stdout)
         self.assertTrue(second["reused"])
         self.assertEqual(second["runId"], result["runId"])
+        step_ref = agent_api.state(self.root)["latest"]["outputs"]["step"]
+        self.assertIn("scene", step_ref)
+        scene_path = Path(step_ref["scene"]["path"])
+        scene_document = json.loads(scene_path.read_text())
+        object_path = Path(scene_document["objects"][0]["step"]["path"])
+        self.assertTrue(object_path.is_file())
+        object_path.unlink()
+        rebuilt = json.loads(self.cli("build", {"phase": "draft", "source": "model.py"}).stdout)
+        self.assertFalse(rebuilt["reused"])
+        self.assertNotEqual(rebuilt["runId"], result["runId"])
 
     def test_real_compile_keeps_full_evidence_and_binds_string_deliverables(self):
         examples = ROOT / "skills" / "a3d-text" / "examples"
@@ -616,7 +721,8 @@ export_draft({'body': Box(10, 10, 10)})
         self.assertTrue(saved["inputBindings"]["source"]["sha256"])
         current = agent_api.state(self.root)["latest"]
         for key, path in saved["deliverables"].items():
-            self.assertEqual(current["outputs"][key], protocol.binding(Path(path)))
+            self.assertEqual({field: current["outputs"][key][field] for field in ("path", "sha256")},
+                             protocol.binding(Path(path)))
         repeated = json.loads(self.cli("build", args).stdout)
         self.assertTrue(repeated["reused"])
         self.assertEqual(repeated["runId"], page["runId"])

@@ -150,3 +150,39 @@ test('bound latest CAD status remains independent of model outcome and input fre
     assert.equal(await readCadRunEvidence(root), undefined);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('every declared plate is retained as internal evidence on failed or stale runs', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'a3d-plate-evidence-'));
+  const bind = async (path: string) => ({ path, sha256: createHash('sha256').update(await readFile(path)).digest('hex') });
+  try {
+    await mkdir(join(root, '.a3d-agent'), { recursive: true });
+    const source = join(root, 'build.py');
+    await writeFile(source, '# build');
+    const inputs = { source: await bind(source) };
+    const artifacts: Record<string, { path: string; sha256: string }> = {};
+    for (const key of ['stl', '3mf', 'plate:02:stl', 'plate:02:3mf', 'internal-part.stl']) {
+      const ext = key.endsWith('3mf') ? '3mf' : 'stl';
+      const path = join(root, `${key.replaceAll(':', '-')}.${ext}`);
+      await writeFile(path, `bytes for ${key}`);
+      artifacts[key] = await bind(path);
+    }
+    const report = join(root, 'compile-result.json');
+    const state = join(root, '.a3d-agent', 'state.json');
+    const saveRun = async (status: string, pass: boolean) => {
+      await writeFile(report, JSON.stringify({ schema: 'evidence-cad-compile-result/v2', runId: 'plate-run', status, pass, artifacts }));
+      const run = { report: await bind(report), inputs };
+      await writeFile(state, JSON.stringify({ schema: 'a3d-agent/v1', latest: run, runs: [run] }));
+    };
+    await saveRun('failed', false);
+    const failed = await readCadRunArtifacts(root);
+    assert.equal(failed.some((item) => item.path.endsWith('internal-part.stl')), false);
+    assert.equal(failed.length, 4);
+    assert.ok(failed.every((item) => item.purpose === 'internal-evidence' && item.status === 'failed'));
+
+    await saveRun('awaiting-visual-review', true);
+    await writeFile(source, '# changed source');
+    const stale = await readCadRunArtifacts(root);
+    assert.equal(stale.length, 4);
+    assert.ok(stale.every((item) => item.inputsCurrent === false && item.purpose === 'internal-evidence' && !item.primary));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

@@ -156,6 +156,48 @@ def source_dependencies(root: Path, source: Path, declared: list[str]) -> dict:
     limited to local imports, including common controls.py parameter modules.
     """
     files = {scoped(root, name) for name in declared}
+
+    def local_modules(path: Path, module: str, *, level: int = 0, children=()):
+        """Yield statically named workspace modules and package initializers."""
+        if level:
+            package = path.parent
+            for _ in range(level - 1):
+                if package == root:
+                    return
+                package = package.parent
+            if not package.is_relative_to(root):
+                return
+            ancestor = package
+            while ancestor.is_relative_to(root):
+                initializer = ancestor / "__init__.py"
+                if initializer.is_file():
+                    yield initializer
+                if ancestor == root:
+                    break
+                ancestor = ancestor.parent
+            base_dirs = [package]
+        else:
+            base_dirs = [path.parent, root]
+        parts = module.split(".") if module else []
+        for directory in dict.fromkeys(base_dirs):
+            for count in range(0, len(parts) + 1):
+                if count == 0:
+                    base = directory
+                else:
+                    base = directory.joinpath(*parts[:count])
+                if count:
+                    candidates = (base.with_suffix(".py"), base / "__init__.py")
+                    for candidate in candidates:
+                        if candidate.is_file():
+                            yield candidate
+                # `from package import child` may refer to a submodule that
+                # Python resolves after loading the package initializer.
+                if count == len(parts) and base.is_dir():
+                    for child in children:
+                        child_base = base / child
+                        for candidate in (child_base.with_suffix(".py"), child_base / "__init__.py"):
+                            if candidate.is_file():
+                                yield candidate
     queue, visited = [source], set()
     while queue:
         path = queue.pop()
@@ -167,17 +209,20 @@ def source_dependencies(root: Path, source: Path, declared: list[str]) -> dict:
         except (SyntaxError, UnicodeError):
             continue  # The source preflight reports invalid code, not this scanner.
         for node in ast.walk(tree):
-            modules = ([alias.name for alias in node.names] if isinstance(node, ast.Import)
-                       else [node.module] if isinstance(node, ast.ImportFrom) and node.module else [])
-            for module in modules:
-                for directory in {path.parent, root}:
-                    base = directory.joinpath(*module.split("."))
-                    for candidate in (base.with_suffix(".py"), base / "__init__.py"):
-                        if candidate.is_file():
-                            dependency = scoped(root, str(candidate))
-                            if dependency != source:
-                                files.add(dependency)
-                                queue.append(dependency)
+            if isinstance(node, ast.Import):
+                imports = ((alias.name, 0, ()) for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imports = ((node.module or "", node.level,
+                            tuple(alias.name for alias in node.names if alias.name != "*")) ,)
+            else:
+                continue
+            for module, level, children in imports:
+                for candidate in local_modules(path, module, level=level, children=children):
+                    dependency = scoped(root, str(candidate))
+                    if dependency != source:
+                        files.add(dependency)
+                    if dependency != source and dependency not in visited:
+                        queue.append(dependency)
     return {"dependency:" + str(path.relative_to(root)): binding(path) for path in sorted(files)}
 
 
@@ -593,15 +638,43 @@ def build(root: Path, args: dict) -> dict:
         result["retryDisplay"] = {"operation": "display", "args": {"report": str(root / f".a3d-agent/runs/{result['runId']}.json")}}
     path = save(root, f".a3d-agent/runs/{result['runId']}.json", result)
     outputs = {}
-    for key, ref in {**result.get("artifacts", {}), **result.get("deliverables", {})}.items():
+    artifact_refs = {}
+    build_report_ref = result.get("artifacts", {}).get("buildReport")
+    if isinstance(build_report_ref, dict) and isinstance(build_report_ref.get("path"), str):
+        try:
+            _, build_report = read_report(root, build_report_ref["path"], build_report_ref.get("sha256"))
+            if isinstance(build_report, dict) and isinstance(build_report.get("artifacts"), dict):
+                artifact_refs.update(build_report["artifacts"])
+        except (OSError, ValueError):
+            pass
+    for key, ref in result.get("artifacts", {}).items():
+        previous = artifact_refs.get(key)
+        same_binding = (isinstance(previous, dict) and isinstance(ref, dict)
+                        and previous.get("path") == ref.get("path")
+                        and previous.get("sha256") == ref.get("sha256"))
+        if key not in artifact_refs or not (same_binding and previous.get("scene")
+                                            and isinstance(ref, dict) and not ref.get("scene")):
+            artifact_refs[key] = ref
+    for key, ref in artifact_refs.items():
         if isinstance(ref, dict) and isinstance(ref.get("path"), str) and isinstance(ref.get("sha256"), str):
-            outputs[key] = {"path": ref["path"], "sha256": ref["sha256"]}
+            outputs[key] = ref
         elif isinstance(ref, str):
             try:
                 outputs[key] = binding(scoped(root, ref))
             except (OSError, ValueError):
                 if result.get("pass") is True:
                     raise ValueError(f"successful build is missing its declared output: {key}")
+    for key, ref in result.get("deliverables", {}).items():
+        if key in outputs:
+            continue
+        if isinstance(ref, str):
+            try:
+                outputs[key] = binding(scoped(root, ref))
+            except (OSError, ValueError):
+                if result.get("pass") is True:
+                    raise ValueError(f"successful build is missing its declared output: {key}")
+        elif isinstance(ref, dict) and isinstance(ref.get("path"), str) and isinstance(ref.get("sha256"), str):
+            outputs[key] = ref
     for key in ("log", "geometry", "cadStage"):
         if isinstance(result.get(key), dict):
             outputs[key] = result[key]
