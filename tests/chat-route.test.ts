@@ -186,6 +186,7 @@ test('streams one native Codex turn without server-side repair prompts', async (
     python: { executable: 'python', ready: true, version: '3.13' },
     runtime,
     runtimeError: undefined,
+    sessionRoot: join(runtime.stateRoot, 'sessions'),
   });
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>((resolve) => server.once('listening', resolve));
@@ -336,6 +337,7 @@ test('does not require Python for a plain Codex chat turn', async () => {
     python: { executable: null, ready: false, version: null },
     runtime,
     runtimeError: undefined,
+    sessionRoot: join(runtime.stateRoot, 'sessions'),
   });
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>((resolve) => server.once('listening', resolve));
@@ -396,6 +398,7 @@ test('streams Codex failures without aborting the settled runtime', async () => 
     python: { executable: null, ready: false, version: null },
     runtime,
     runtimeError: undefined,
+    sessionRoot: join(runtime.stateRoot, 'sessions'),
   });
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>((resolve) => server.once('listening', resolve));
@@ -460,6 +463,7 @@ test('surfaces max_output_tokens as an incomplete model turn instead of completi
     python: { executable: null, ready: false, version: null },
     runtime,
     runtimeError: undefined,
+    sessionRoot: join(runtime.stateRoot, 'sessions'),
   });
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>((resolve) => server.once('listening', resolve));
@@ -637,6 +641,7 @@ test('closes a lease returned during open when the client disconnects mid-open',
       python: { executable: null, ready: false, version: null },
       runtime,
       runtimeError: undefined,
+      sessionRoot: join(runtime.stateRoot, 'sessions'),
     },
     async (baseUrl) => {
       const controller = new AbortController();
@@ -706,6 +711,7 @@ test('opens and closes a turn executor lease around a successful turn', async ()
       python: { executable: null, ready: false, version: null },
       runtime,
       runtimeError: undefined,
+      sessionRoot: join(runtime.stateRoot, 'sessions'),
     },
     async (baseUrl) => {
       const response = await postChat(baseUrl, {
@@ -756,6 +762,7 @@ test('closes the turn executor lease when the runtime turn fails', async () => {
       python: { executable: null, ready: false, version: null },
       runtime,
       runtimeError: undefined,
+      sessionRoot: join(runtime.stateRoot, 'sessions'),
     },
     async (baseUrl) => {
       const response = await postChat(baseUrl, {
@@ -825,6 +832,7 @@ test('closes the turn executor lease when the client disconnects mid-turn', asyn
       python: { executable: null, ready: false, version: null },
       runtime,
       runtimeError: undefined,
+      sessionRoot: join(runtime.stateRoot, 'sessions'),
     },
     async (baseUrl) => {
       const controller = new AbortController();
@@ -888,6 +896,7 @@ function chatDependencies(
     python: { executable: null, ready: false, version: null },
     runtime,
     runtimeError: undefined,
+    sessionRoot: join(runtime.stateRoot, 'sessions'),
   };
 }
 

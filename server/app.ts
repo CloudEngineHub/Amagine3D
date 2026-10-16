@@ -59,6 +59,7 @@ export function createApp(dependencies: AppDependencies): Express {
     python,
     runtime,
     runtimeError,
+    sessionRoot: paths.sessionRoot,
   });
 
   if (existsSync(paths.distPath)) {

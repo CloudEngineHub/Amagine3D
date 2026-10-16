@@ -88,6 +88,7 @@ export interface ChatRouteDependencies {
   python: PythonHealth;
   runtime: CodexRuntimeLike | undefined;
   runtimeError: string | undefined;
+  sessionRoot: string;
   timeouts?: AgentRunTimeouts;
 }
 
@@ -331,7 +332,7 @@ export function registerChatRoute(
       });
       return;
     }
-    const { python, runtime, runtimeError } = dependencies;
+    const { python, runtime, runtimeError, sessionRoot } = dependencies;
     if (!runtime) {
       response.status(503).json({
         message: runtimeError || 'A3D runtime is not ready.',
@@ -370,7 +371,7 @@ export function registerChatRoute(
     let cadSystem: typeof requestedCadSystem;
     try {
       cadSystem = await sessionCadSystem(
-        join(runtime.stateRoot, 'sessions'),
+        sessionRoot,
         sessionId,
         requestedCadSystem,
       );
@@ -603,13 +604,12 @@ export function registerChatRoute(
       );
       await supervisor.run(() =>
         appendSessionUserMessage(
-          join(runtime.stateRoot, 'sessions'),
+          sessionRoot,
           sessionId,
           message,
           cadSystem,
         ),
       );
-      const sessionRoot = join(runtime.stateRoot, 'sessions');
       const threadId = await supervisor.run(() =>
         readSessionThreadId(sessionRoot, sessionId),
       );
@@ -735,7 +735,7 @@ export function registerChatRoute(
           const turn = finishRunOutcome(terminalOutcome, finishRun, accounting);
           try {
             await appendSessionAssistantTurn(
-              join(runtime.stateRoot, 'sessions'),
+              sessionRoot,
               sessionId,
               turn,
             );

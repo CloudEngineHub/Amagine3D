@@ -13,7 +13,11 @@ import {
 
 import { createApp } from '../server/app.ts';
 import { appRouter, type AppRouter } from '../server/trpc/router.ts';
-import { API_VERSION, BUNDLED_POMODORO_SESSION_ID } from '../src/types.ts';
+import {
+  API_VERSION,
+  BUNDLED_POMODORO_SESSION_ID,
+  type AgentEvent,
+} from '../src/types.ts';
 
 test('serves the JSON contract through tRPC and removes the old REST API', async () => {
   const root = await mkdtemp(join(tmpdir(), 'amagine-trpc-'));
@@ -94,6 +98,92 @@ test('serves the JSON contract through tRPC and removes the old REST API', async
         if (error) rejectPromise(error);
         else resolvePromise();
       });
+    });
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test('chat and tRPC share the configured session root across turns', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'amagine-shared-session-root-'));
+  const sessionId = '3b0d4f25-1707-4cc8-92cf-6f5c28edfc93';
+  const workspaceRoot = join(root, 'workspace');
+  const threadId = 'shared-session-thread';
+  const resumedThreadIds: Array<string | undefined> = [];
+  await mkdir(join(workspaceRoot, 'sessions', sessionId), { recursive: true });
+
+  const server = createApp({
+    paths: {
+      bundledPomodoroRoot: join(root, 'bundled'),
+      distPath: join(root, 'missing-dist'),
+      projectRoot: root,
+      // Deliberately differs from runtime.stateRoot/sessions to catch drift.
+      sessionRoot: join(root, 'session-records'),
+      workspaceRoot,
+    },
+    python: { executable: null, ready: false, version: null },
+    runtime: {
+      configured: true,
+      modelName: 'openai/test-model',
+      runtimeReady: true,
+      searchBackend: 'disabled',
+      skillDiagnostics: [],
+      skills: [],
+      stateRoot: join(root, 'runtime-state'),
+      webSearchEnabled: false,
+      workspaceRoot,
+      async runTurn(request) {
+        resumedThreadIds.push(request.threadId);
+        await request.onThreadStarted?.(threadId);
+        return { finalResponse: `Reply: ${request.message}`, threadId };
+      },
+    },
+    runtimeError: undefined,
+  }).listen(0, '127.0.0.1');
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once('listening', resolve);
+      server.once('error', reject);
+    });
+    const { port } = server.address() as AddressInfo;
+    const origin = `http://127.0.0.1:${port}`;
+    const client = createTRPCClient<AppRouter>({
+      links: [httpBatchLink({ url: `${origin}/trpc` })],
+    });
+    const prompts = ['Explain BRep', 'Explain its edges'];
+    const expectedMessages: string[] = [];
+
+    for (const message of prompts) {
+      const response = await fetch(`${origin}/api/chat`, {
+        body: JSON.stringify({ message, sessionId, taskType: 'chat' }),
+        headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+      });
+      assert.equal(response.status, 200);
+      const events = (await response.text())
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as AgentEvent);
+      assert.equal(events.at(-1)?.type, 'complete');
+
+      const catalog = await client.sessions.catalog.query();
+      assert.deepEqual(
+        catalog.sessions.filter(({ kind }) => kind === 'user').map(({ id }) => id),
+        [sessionId],
+      );
+      const detail = await client.sessions.detail.query({ sessionId });
+      expectedMessages.push(message, `Reply: ${message}`);
+      assert.deepEqual(
+        detail.messages.map((entry) =>
+          entry.role === 'user' ? entry.text : entry.replyText,
+        ),
+        expectedMessages,
+      );
+    }
+    assert.deepEqual(resumedThreadIds, [undefined, threadId]);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
     });
     await rm(root, { force: true, recursive: true });
   }
