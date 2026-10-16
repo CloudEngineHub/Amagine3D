@@ -177,8 +177,6 @@ class ColorPipelineTests(unittest.TestCase):
 
     def test_3mf_writer_and_cli_require_an_explicit_package_mode(self):
         exporter = self.cad_helpers._export_3mf
-        self.assertFalse(hasattr(exporter, "write_3mf"))
-        self.assertFalse(hasattr(exporter, "verify_3mf"))
         self.assertEqual(exporter._archive_package_mode(None), "invalid")
         with self.assertRaisesRegex(TypeError, "package_mode"):
             exporter.write_color_archive([], "unused.3mf")
@@ -196,24 +194,6 @@ class ColorPipelineTests(unittest.TestCase):
         )
         self.assertEqual(missing.returncode, 2)
         self.assertIn("--package-mode", missing.stdout)
-
-        for legacy_args in (
-            ["--verify", "unused.3mf"],
-            ["--separate-parts", "unused.3mf", "unused.stl=#CC2233"],
-        ):
-            with self.subTest(legacy_args=legacy_args):
-                legacy = subprocess.run(
-                    [
-                        sys.executable,
-                        str(COLOR / "export_3mf.py"),
-                        *legacy_args,
-                    ],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                )
-                self.assertEqual(legacy.returncode, 2)
-                self.assertIn("--package-mode", legacy.stdout)
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

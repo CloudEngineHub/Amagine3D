@@ -46,18 +46,6 @@ class SharedSkillFileTests(unittest.TestCase):
                 self.assertFalse((TEXT / relative).exists())
                 self.assertFalse((COLOR / relative).exists())
 
-    def test_shared_profiles_and_printability_reference_exist_only_in_runtime(self):
-        shared_resources = (
-            "references/bambu-printability.md",
-            "references/bambu-profiles.json",
-            "references/evidence-contract.md",
-            "references/multipart-connections.md",
-        )
-        for relative in shared_resources:
-            with self.subTest(path=relative):
-                self.assertTrue((PUBLIC / relative).is_file())
-        self.assertTrue((TEXT / "examples" / "bambu-a1-mini-0.4-standard.example.json").is_file())
-
     def test_color_runtime_is_one_shared_namespace(self):
         command = (
             "import sys; "
@@ -104,6 +92,7 @@ class SharedSkillFileTests(unittest.TestCase):
         ):
             with self.subTest(path=relative):
                 self.assertTrue((PUBLIC / relative).is_file())
+        self.assertTrue((TEXT / "examples" / "bambu-a1-mini-0.4-standard.example.json").is_file())
         body = (TEXT / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("$AMAGINE3D_RUNTIME_DIR/references/", body)
         self.assertIn("$AMAGINE3D_RUNTIME_DIR/color/BACKEND.md", body)
