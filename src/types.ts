@@ -179,6 +179,7 @@ export interface ArtifactCollection {
 export interface ModelParameter {
   id: string;
   kind: 'integer' | 'number';
+  label?: { en: string; zh: string };
   maximum?: number;
   minimum?: number;
   step: number;

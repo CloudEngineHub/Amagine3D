@@ -99,12 +99,13 @@ export function ParametersPanel({
           ) : (
             <fieldset className={styles.parameterGroup} disabled={busy || !model.editable}>
               {model.parameters.map((parameter) => {
+                const label = parameter.label?.[language] ?? parameter.id;
                 const value = values[parameter.id] ?? parameter.value;
                 const unit = parameter.unit ? ` ${parameter.unit}` : '';
                 return (
                   <div className={styles.parameterField} key={parameter.id}>
-                    <label htmlFor={`parameter-${parameter.id}`}>
-                      {parameter.id}
+                    <label aria-label={label} htmlFor={`parameter-${parameter.id}`}>
+                      {label}
                     </label>
                     <div className={styles.parameterValueRow}>
                       <input
@@ -132,7 +133,7 @@ export function ParametersPanel({
                     {parameter.minimum !== undefined && parameter.maximum !== undefined ? (
                       <div className={styles.parameterRange}>
                         <input
-                          aria-label={parameter.id}
+                          aria-label={label}
                           max={parameter.maximum}
                           min={parameter.minimum}
                           onChange={(event) =>
@@ -149,11 +150,11 @@ export function ParametersPanel({
                         />
                         <small className={styles.parameterLimits}>
                           <span>
-                            <b>MIN</b> {parameter.minimum}
+                            <b>{text('Min', '最小')}</b> {parameter.minimum}
                             {unit}
                           </span>
                           <span>
-                            <b>MAX</b> {parameter.maximum}
+                            <b>{text('Max', '最大')}</b> {parameter.maximum}
                             {unit}
                           </span>
                         </small>

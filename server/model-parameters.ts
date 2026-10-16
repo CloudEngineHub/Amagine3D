@@ -129,9 +129,15 @@ async function readDesignParameters(workspaceRoot: string, designPath: string, r
     const range = Array.isArray(definition.range) ? definition.range : undefined;
     const minimum = typeof range?.[0] === 'number' ? range[0] : undefined;
     const maximum = typeof range?.[1] === 'number' ? range[1] : undefined;
+    const rawLabel = definition.label;
+    const label = rawLabel && typeof rawLabel === 'object' && !Array.isArray(rawLabel) &&
+      typeof rawLabel.en === 'string' && typeof rawLabel.zh === 'string'
+      ? { en: rawLabel.en, zh: rawLabel.zh }
+      : undefined;
     parameters.push({
       id, kind: definition.type === 'integer' ? 'integer' : 'number',
       step: definition.type === 'integer' ? 1 : 0.01,
+      ...(label ? { label } : {}),
       ...(definition.type === 'length' ? { unit: 'mm' } : definition.type === 'angle' ? { unit: 'deg' } : {}),
       ...(minimum !== undefined ? { minimum } : {}), ...(maximum !== undefined ? { maximum } : {}),
       value: definition.value,

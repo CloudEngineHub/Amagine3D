@@ -50,8 +50,9 @@ a3d agent design --args-file edits.json
 
 Create a model with `baseRevision: null`. Every edit addresses a stable ID.
 A batch may use forward references; its final graph must be valid, each part
-must have a Solid result, and each target may occur once. This creates a simple
-open box in one request:
+must have a Solid result, and each target may occur once. This creates a
+configurable cube; use `$AMAGINE3D_SKILL_DIR/examples/open_box.a3d.json` for
+independent width, depth, height, wall and floor controls:
 
 ```json
 {
@@ -59,9 +60,10 @@ open box in one request:
   "design": "model.a3d.json",
   "baseRevision": null,
   "changes": [
-    {"kind": "add", "target": "params.wall", "value": {"type": "length", "value": 2, "range": [1, 4]}},
+    {"kind": "add", "target": "params.size", "value": {"type": "length", "value": 80, "range": [50, 100], "label": {"en": "Overall size", "zh": "整体尺寸"}}},
+    {"kind": "add", "target": "params.wall", "value": {"type": "length", "value": 2, "range": [1, 4], "label": {"en": "Wall thickness", "zh": "壁厚"}}},
     {"kind": "add", "target": "parts.body", "value": {"result": "@body.shell"}},
-    {"kind": "add", "target": "body.shell", "value": {"op": "open_box", "size": [80, 60, 30], "wall": "=wall", "floor": 2}}
+    {"kind": "add", "target": "body.shell", "value": {"op": "open_box", "size": ["=size", "=size", "=size"], "wall": "=wall", "floor": "=wall"}}
   ]
 }
 ```
@@ -109,8 +111,35 @@ batch sizes.
 
 ## Values and references
 
-The saved schema is `a3d-design/v1`; units are mm and deg. Numeric parameter
-types are length, angle, scalar and integer; boolean parameters use literals.
+The saved schema is `a3d-design/v1`; units are mm and deg. The current language
+contract is version 4. Numeric parameter types are length, angle, scalar and
+integer; boolean parameters use literals. A parameter may include optional
+display metadata with both language labels:
+
+```json
+"width": {
+  "type": "length", "value": 80, "range": [70, 90],
+  "label": {"en": "Overall width", "zh": "整体宽度"}
+}
+```
+
+Both `en` and `zh` are required when `label` is present; each must be a
+nonempty string of at most 48 characters, with no extra label keys. Labels are
+display-only: the stable parameter ID remains the expression and API key, and
+labels never create geometry references or expression dependencies. Existing
+designs without labels continue to display their IDs.
+
+For new designs, expose the independent dimensions a user is likely to adjust,
+chosen for the actual geometry: overall length/width/height, wall or floor
+thickness, hole diameter and spacing, corner radius, or mating clearance. Give
+each a sensible range and bilingual label. Drive all related geometry and
+placements from the same parameter ID; use expressions for dependent dimensions
+such as inside width, offsets, or matched hole positions. Avoid splitting a
+dimension into parameters that provide no useful independent control. A range
+defines allowed parameter values, not a guarantee that every combination meets
+the frozen intent, manufacturing requirements, or QA checks. Preserve existing
+acceptance targets and resolve failed QA against the evidence.
+
 Typed numeric fields accept literal numbers or short expressions such as
 `=height - floor` or `=width - 2*wall`. Expressions use arithmetic and
 `min/max/abs/sqrt/sin/cos/atan2/mm/deg`; addition requires matching units.

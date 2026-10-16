@@ -498,6 +498,7 @@ def capabilities(root: Path, args: dict) -> dict:
         page = inspect(payload, binding(path), field="/operations", cursor=args.get("cursor"),
                        metadata={"capabilityVersion": version, "designSchema": payload["schema"], "limits": payload["limits"],
                                  "fieldTypes": compact(payload["fieldTypes"], "/fieldTypes", budget=3_000),
+                                 "parameterDefinition": compact(payload["parameterDefinition"], "/parameterDefinition", budget=800),
                                  "operationNames": compact(payload["operationNames"], "/operationNames", budget=1_000)})
         remember_capabilities(root, page, version, "designOps")
         return page

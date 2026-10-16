@@ -9,7 +9,7 @@ import json
 import re
 
 SCHEMA = "a3d-design/v1"
-VERSION = 3
+VERSION = 4
 LIMITS = {"documentBytes": 262_144, "nodes": 256, "changes": 64,
           "expressionNodes": 64, "expressionDepth": 16, "parameterDepth": 32,
           "dependencyDepth": 64, "points": 128, "instances": 64}
@@ -146,7 +146,15 @@ def parameters(document):
         visiting.add(name)
         spec, field = definitions[name], "/params/" + name
         identifier(name, field)
-        fields(spec, {"type", "value"}, {"range"}, field=field)
+        fields(spec, {"type", "value"}, {"range", "label"}, field=field)
+        if "label" in spec:
+            label = spec["label"]
+            fields(label, {"en", "zh"}, field=field + "/label")
+            for language, text in label.items():
+                if (not isinstance(text, str) or not text.strip() or text != text.strip()
+                        or len(text) > 48 or any(ord(char) < 32 for char in text)):
+                    fail("SCHEMA", "parameter labels must be short nonempty strings (1..48 characters)",
+                         field + "/label/" + language)
         kind = spec["type"]
         if not isinstance(kind, str):
             fail("TYPE", "parameter type must be a string", field + "/type")
@@ -603,5 +611,10 @@ def capabilities(names: list[str]) -> dict:
         elif name == "union":
             operations[name]["rule"] = "Checked union requires a connected body. Union additive features into their actual receiving body; pass separate cutters as a tools array or use a SolidSet pattern, not an unrelated union of disconnected bosses."
     return {"schema": SCHEMA, "version": VERSION, "limits": LIMITS,
+            "parameterDefinition": {
+                "required": {"type": "length|angle|scalar|integer|boolean", "value": "literal or typed expression"},
+                "optional": {"range": "two numeric bounds for numeric parameters", "label": {"en": "nonempty English display string, 1..48 characters", "zh": "nonempty Chinese display string, 1..48 characters"}},
+                "labelRule": "label requires exactly en and zh, is display-only, and does not affect geometry or dependencies; stable parameter IDs remain expression/API keys",
+            },
             "fieldTypes": types, "operations": operations,
             "operationNames": list(OPS)}

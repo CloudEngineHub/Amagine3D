@@ -17,7 +17,7 @@ import agent_api
 from agent_protocol import binding, MAX_WIRE_BYTES, wire_size
 from design_api import apply, load, read
 from design_build import build_geometry
-from design_language import DesignError, capabilities, normalize, SCHEMA
+from design_language import DesignError, capabilities, normalize, SCHEMA, VERSION
 
 
 def box_design():
@@ -42,6 +42,10 @@ def geometry(document):
 class DesignContractTests(unittest.TestCase):
     def test_capability_examples_are_usable_without_reading_implementation(self):
         contract = capabilities(["rotate", "fillet", "hole", "loft", "self_tapping_screw"])
+        self.assertEqual(contract["version"], VERSION)
+        self.assertEqual(contract["parameterDefinition"]["optional"]["label"],
+                         {"en": "nonempty English display string, 1..48 characters",
+                          "zh": "nonempty Chinese display string, 1..48 characters"})
         types = contract["fieldTypes"]
         document = box_design()
         document["parts"]["body"]["features"].extend([
@@ -54,6 +58,35 @@ class DesignContractTests(unittest.TestCase):
         self.assertEqual(types["Frame"]["required"]["normal"], "direction")
         self.assertIn("locator_pairs", contract["operations"]["self_tapping_screw"]["intent"]["fastening"])
         self.assertNotIn("selector", capabilities(["box"])["fieldTypes"])
+
+    def test_bilingual_parameter_labels_validate_and_do_not_change_geometry(self):
+        document = box_design()
+        before_ir = normalize(document)
+        before_shape = geometry(document)[0]["body"]
+        document["params"]["width"]["label"] = {"en": "@frames.missing", "zh": "=height + wall"}
+        after_ir = normalize(document)
+        after_shape = geometry(document)[0]["body"]
+        self.assertEqual(after_ir["params"], before_ir["params"])
+        self.assertEqual(after_ir["nodes"], before_ir["nodes"])
+        self.assertAlmostEqual(after_shape.volume, before_shape.volume, places=8)
+        self.assertEqual(list(after_shape.bounding_box().min), list(before_shape.bounding_box().min))
+        self.assertEqual(list(after_shape.bounding_box().max), list(before_shape.bounding_box().max))
+
+        invalid_labels = (
+            ({"en": "Width"}, "DESIGN.SCHEMA"),
+            ({"en": "Width", "zh": "宽", "fr": "Largeur"}, "DESIGN.SCHEMA"),
+            ({"en": "", "zh": "宽"}, "DESIGN.SCHEMA"),
+            ({"en": "Width", "zh": 7}, "DESIGN.SCHEMA"),
+            ({"en": "x" * 49, "zh": "宽"}, "DESIGN.SCHEMA"),
+            (["Width", "宽"], "DESIGN.TYPE"),
+        )
+        for label, code in invalid_labels:
+            with self.subTest(label=label):
+                invalid = box_design()
+                invalid["params"]["width"]["label"] = label
+                with self.assertRaises(DesignError) as raised:
+                    normalize(invalid)
+                self.assertEqual(raised.exception.issue["code"], code)
 
     def test_parameters_are_dimensional_and_dependency_sorted(self):
         document = box_design()
@@ -214,6 +247,19 @@ class DesignEditTests(DesignWorkspace):
                         "baseRevision": response["revision"], "changes": [{"kind": "remove", "target": "body.blank"}]})
         self.assertEqual(invalid["status"], "failed")
 
+    def test_parameter_labels_are_preserved_but_never_read_as_references_or_expressions(self):
+        self.apply([{"kind": "update", "target": "params.wall", "set": {
+            "label": {"en": "@frames.missing", "zh": "=width + height"},
+        }}])
+        response = read(self.root, {"action": "read", "design": self.path.name, "view": "nodes",
+                                   "ids": ["params.wall", "params.width"],
+                                   "include": ["directDependencies", "directDependents"]})
+        wall = response["nodes"]["params.wall"]
+        width = response["nodes"]["params.width"]
+        self.assertEqual(wall["definition"]["label"], {"en": "@frames.missing", "zh": "=width + height"})
+        self.assertEqual(wall["directDependencies"], [])
+        self.assertNotIn("params.wall", width["directDependents"])
+
     def test_large_query_is_budgeted_and_full_fields_are_recoverable(self):
         document = box_design()
         for i in range(20):
@@ -228,6 +274,10 @@ class DesignEditTests(DesignWorkspace):
     def test_context_remembers_only_delivered_supported_operation_contracts(self):
         page = agent_api.dispatch(self.root, "capabilities", {"designOps": ["box", "hole", "unavailable"]})
         self.assertLessEqual(wire_size(page), MAX_WIRE_BYTES)
+        self.assertIn("parameterDefinition", page)
+        self.assertEqual(page["parameterDefinition"]["optional"]["label"],
+                         {"en": "nonempty English display string, 1..48 characters",
+                          "zh": "nonempty Chinese display string, 1..48 characters"})
         context = agent_api.context(self.root, {})
         self.assertEqual(context["previouslyProvidedDesignOps"], ["box", "hole"])
         agent_api.dispatch(self.root, "capabilities", {"symbols": ["BuildSession.cut"]})
@@ -404,6 +454,37 @@ class DesignCliTests(DesignWorkspace):
                                 cwd=self.root, capture_output=True, text=True, timeout=90)
         self.assertEqual(result.stderr, "", result.stderr)
         return result, json.loads(result.stdout)
+
+    def test_bilingual_open_box_public_apply_read_and_draft_loop(self):
+        example = ROOT / "skills" / "a3d-text" / "examples" / "open_box.a3d.json"
+        self.path.write_bytes(example.read_bytes())
+        self.revision = binding(self.path)["sha256"]
+        read_result, initial = self.cli("design", {"action": "read", "design": self.path.name,
+                                                       "revision": self.revision})
+        self.assertEqual(read_result.returncode, 0)
+        self.assertEqual(initial["languageVersion"], 4)
+        self.assertEqual(initial["parameterCount"], 5)
+        _, named = self.cli("design", {"action": "read", "design": self.path.name,
+                                         "revision": self.revision, "view": "nodes", "ids": ["params.width"]})
+        self.assertEqual(named["nodes"]["params.width"]["definition"]["label"],
+                         {"en": "Overall width", "zh": "整体宽度"})
+        _, applied = self.cli("design", {"action": "apply", "design": self.path.name,
+                                           "baseRevision": self.revision, "changes": [
+            {"kind": "update", "target": "params.width", "set": {"value": 85}},
+        ]})
+        self.assertEqual(applied["status"], "saved")
+        _, dependencies = self.cli("design", {"action": "read", "design": self.path.name,
+                                                "revision": applied["revision"], "view": "nodes",
+                                                "ids": ["body.shell"], "include": ["directDependencies"]})
+        self.assertTrue({"params.width", "params.depth", "params.height", "params.wall", "params.floor"}.issubset(
+            dependencies["nodes"]["body.shell"]["directDependencies"]))
+        changed_shape = geometry(json.loads(self.path.read_text()))[0]["body"]
+        self.assertAlmostEqual(changed_shape.bounding_box().size.X, 85, places=6)
+        draft_result, draft = self.cli("build", {"phase": "draft", "design": self.path.name,
+                                                   "revision": applied["revision"]})
+        self.assertEqual(draft_result.returncode, 0, draft)
+        self.assertEqual(draft["status"], "draft")
+        self.assertEqual(draft["design"]["revision"], applied["revision"])
 
     def test_real_draft_reuse_and_failed_revision_preserve_successful_artifacts(self):
         args = {"phase": "draft", "design": self.path.name, "revision": self.revision}

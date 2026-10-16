@@ -39,7 +39,7 @@ test('DSL parameter rebuild preserves a failed revision and can compile a correc
     });
     const design = {
       schema: 'a3d-design/v1', units: { length: 'mm', angle: 'deg' },
-      params: { width: { type: 'length', value: 40, range: [39, 41] } },
+      params: { width: { type: 'length', value: 40, range: [39, 41], label: { en: 'Body width', zh: '主体宽度' } } },
       frames: { top: { origin: [0, 0, 10], u: [1, 0, 0], normal: [0, 0, 1] } },
       parts: { 'simple-brep': { features: [
         { id: 'blank', op: 'box', size: ['=width', 28, 10], align: ['center', 'center', 'min'] },
@@ -60,6 +60,7 @@ test('DSL parameter rebuild preserves a failed revision and can compile a correc
     const model = first.find((item) => item.revision === initialRevision && item.editable);
     assert.ok(model, 'the current DSL design should expose its declared parameters');
     assert.equal(model.parameters.find((item) => item.id === 'width')?.value, 40);
+    assert.deepEqual(model.parameters.find((item) => item.id === 'width')?.label, { en: 'Body width', zh: '主体宽度' });
     const beforePath = model.primaryPreviewPath;
     const beforeStep = model.artifactPaths.find((path) => path.endsWith('.step'));
     assert.ok(beforeStep);
@@ -76,6 +77,7 @@ test('DSL parameter rebuild preserves a failed revision and can compile a correc
     assert.equal(editableParameterPreviewPath(refreshed, draft.designPath), draft.displayPreviewPath,
       'the UI selects the current design context after a failed build');
     assert.equal(draft.parameters.find((item) => item.id === 'width')?.value, 40.5);
+    assert.deepEqual(draft.parameters.find((item) => item.id === 'width')?.label, { en: 'Body width', zh: '主体宽度' });
     assert.equal(draft.buildStatus, 'failed', 'the failed build state remains visible after refresh');
 
     await rebuildModelWithParameters({ workspaceRoot: root, request: {
@@ -89,6 +91,7 @@ test('DSL parameter rebuild preserves a failed revision and can compile a correc
     assert.notEqual(final.primaryPreviewPath, beforePath, 'a new design revision receives a new preview path');
     assert.equal(final.previewStale, false);
     assert.equal(final.parameters.find((item) => item.id === 'width')?.value, 40.01);
+    assert.deepEqual(final.parameters.find((item) => item.id === 'width')?.label, { en: 'Body width', zh: '主体宽度' });
     const finalStep = final.artifactPaths.find((path) => path.endsWith('.step'));
     assert.ok(finalStep);
     assert.notEqual(digest(await readFile(join(root, finalStep))), beforeStepHash, 'the rebuilt STEP geometry changes');
@@ -113,7 +116,7 @@ test('DSL parameter reads hide expressions and reject stale revisions, paths, ol
     const design = {
       schema: 'a3d-design/v1', units: { length: 'mm', angle: 'deg' },
       params: {
-        free: { type: 'scalar', value: 1.25 },
+        free: { type: 'scalar', value: 1.25, label: { en: '@literal', zh: '=自由参数' } },
         derived: { type: 'length', value: '=free * 2' },
       },
       parts: { body: { features: [{ id: 'blank', op: 'box', size: ['=free', 10, 10] }], result: '@body.blank' } },
@@ -137,6 +140,7 @@ test('DSL parameter reads hide expressions and reject stale revisions, paths, ol
     assert.deepEqual(model.parameters.map(({ id }) => id), ['free']);
     assert.equal(model.parameters[0]?.minimum, undefined);
     assert.equal(model.parameters[0]?.maximum, undefined);
+    assert.deepEqual(model.parameters[0]?.label, { en: '@literal', zh: '=自由参数' });
 
     assert.equal(parameterBuildRequestSchema.safeParse({
       designPath, revision, values: { free: 2 }, sourcePath: 'legacy.py', sourceHash: revision,

@@ -169,7 +169,7 @@ export function codexPrompt(
   const taskInstruction =
     taskType === 'cad'
       ? [
-          '这是一个 CAD 任务。首次初始化运行 `a3d help`，读取环境变量 `$AMAGINE3D_SKILL_DIR` 指向的确切 `SKILL.md` 一次。不要搜索或读取 cwd、用户目录或全局 skills 中的同名文件；任务分类、阶段顺序、reference 路由以该项目 skill 为准。恢复已有会话或压缩后先用 `a3d agent context`；已初始化就不要重复 help/skill。优先用 `a3d agent design/capabilities/build/inspect/validate`，参数为一个 JSON 对象，也可用 --args-file 读取当前工作区的 JSON 文件。受支持的建模操作使用参数化设计和批量局部编辑，保留可编辑 .a3d.json；电子外壳的定位环、螺钉配对和安装声明已有受控 DSL 适配器；回退 Python 前说明具体缺失操作或绑定，不以产品类别决定模式。',
+          '这是一个 CAD 任务。首次初始化运行 `a3d help`，读取环境变量 `$AMAGINE3D_SKILL_DIR` 指向的确切 `SKILL.md` 一次。不要搜索或读取 cwd、用户目录或全局 skills 中的同名文件；任务分类、阶段顺序、reference 路由以该项目 skill 为准。恢复已有会话或压缩后先用 `a3d agent context`；已初始化就不要重复 help/skill。优先用 `a3d agent design/capabilities/build/inspect/validate`，参数为一个 JSON 对象，也可用 --args-file 读取当前工作区的 JSON 文件。受支持的建模操作使用参数化设计和批量局部编辑，保留可编辑 .a3d.json；新 DSL 设计应把适合用户调整的主要独立尺寸按几何放入 params（如长宽高、壁/底厚、孔径/间距、圆角、配合间隙），提供中英文 label 和合理 range；同一参数应驱动相关几何与定位，派生尺寸用表达式，不机械追求参数数量。range 不保证所有值都满足制造验收，保持冻结 intent 与 QA 目标。电子外壳的定位环、螺钉配对和安装声明已有受控 DSL 适配器；回退 Python 前说明具体缺失操作或绑定，不以产品类别决定模式。',
           '首稿先确定外形、内腔、组件占位和功能路径，只读所需合同。功能骨架稳定后立即声明独立 intent，用 validate 检查 design/revision/intent 并首次 compile；检查安装、紧固后再细化外观。apply 返回的 revision 用于下一次 build。恢复时直接消费 context.nextAction、context.nextInspect 和 context.nextDesignRead，复用同版本 capabilityReports；仅精读缺失字段并跟随 page.nextRequest。',
           '外观调整必须保留冻结 intent 的尺寸和功能目标；最终逐项核对文字验收与实际控制值。安装 witness 必须由原组件包络和完整实际路径推导，不通过缩小见证消除碰撞。',
           '项目 CLI 的 evidence gate 只拒绝已有完整成功证据且 source/intent/scene/profile 字节完全相同的 draft 或 compile。遇到 `a3d-admission-rejection/v1` 时读取 matchedResult，或实质修改输入后再运行；缺失、不完整或失败证据仍可重试，门控不决定阶段、几何、拓扑或修复策略。',

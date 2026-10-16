@@ -39,6 +39,9 @@ test('maps the existing model and reasoning environment to Codex', () => {
   assert.match(cadPrompt, /不要搜索或读取 cwd、用户目录或全局 skills/u);
   assert.match(cadPrompt, /任务分类、阶段顺序、reference 路由/u);
   assert.match(cadPrompt, /功能骨架稳定后/u);
+  assert.match(cadPrompt, /独立尺寸.*params/u);
+  assert.match(cadPrompt, /中英文 label 和合理 range/u);
+  assert.match(cadPrompt, /range 不保证所有值都满足制造验收/u);
   assert.match(cadPrompt, /agent display/u);
   assert.match(cadPrompt, /context.nextInspect/u);
   assert.match(cadPrompt, /具体缺失操作或绑定/u);

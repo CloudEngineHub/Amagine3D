@@ -141,7 +141,14 @@ def read(root, args):
                 or not isinstance(include, list) or any(x not in {"directDependencies", "directDependents"} for x in include)):
             fail("SCHEMA", "nodes view needs 1..20 IDs and optional directDependencies/directDependents")
         entries = definitions(document)
-        links = {name: set(references({"result": value["result"]} if name.startswith("parts.") else value)) for name, (value, _) in entries.items()}
+        def semantic_value(name, value):
+            if name.startswith("parts."):
+                return {"result": value["result"]}
+            if name.startswith("params.") and isinstance(value, dict):
+                return {key: child for key, child in value.items() if key != "label"}
+            return value
+
+        links = {name: set(references(semantic_value(name, value))) for name, (value, _) in entries.items()}
         # Parameter expressions have no @ prefix; include their symbol dependencies.
         import ast
         for name, (value, _) in entries.items():
@@ -159,7 +166,7 @@ def read(root, args):
                 elif isinstance(item, list):
                     for child in item:
                         yield from expressions(child)
-            links[name].update(expressions(value))
+            links[name].update(expressions(semantic_value(name, value)))
         response["nodes"] = {}
         for name in ids:
             if name not in entries:

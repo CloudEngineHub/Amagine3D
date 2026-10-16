@@ -11,7 +11,8 @@
       "range": [
         0.1,
         0.6
-      ]
+      ],
+      "label": {"en": "Locator clearance", "zh": "定位间隙"}
     },
     "pilot_diameter": {
       "type": "length",
@@ -19,7 +20,8 @@
       "range": [
         2.3,
         2.9
-      ]
+      ],
+      "label": {"en": "Pilot hole diameter", "zh": "导孔直径"}
     },
     "retainer_gap": {
       "type": "length",
@@ -27,7 +29,8 @@
       "range": [
         0.1,
         0.4
-      ]
+      ],
+      "label": {"en": "Retainer clearance", "zh": "限位间隙"}
     }
   },
   "frames": {

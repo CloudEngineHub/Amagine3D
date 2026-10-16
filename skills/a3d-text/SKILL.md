@@ -18,10 +18,12 @@ Ordinary exterior dimensions use nominal ±0.1 mm, checks 0.01 mm precision, unl
 Prefer DSL for supported geometry, including electronic enclosures. Name the specific unsupported geometry/binding before Python fallback.
 Query only needed contracts in one batch: `a3d agent capabilities '{"designOps":["open_box","hole"]}'` (Python uses symbols).
 Results page by output size, not name count. Follow page.nextRequest with `a3d agent inspect`; do not preload all contracts or references.
-For a new DSL draft, this complete apply request is enough to start; consult `$AMAGINE3D_RUNTIME_DIR/references/parametric-design.md` for unfamiliar editing/operation details:
+Starter: this apply creates a configurable cube. Full box example: `$AMAGINE3D_SKILL_DIR/examples/open_box.a3d.json`; editing details: `$AMAGINE3D_RUNTIME_DIR/references/parametric-design.md`:
+
+Use useful independent controls with bilingual labels/ranges, shared IDs for related geometry, and expressions for derived dimensions. Preserve frozen intent/QA; a range is not a manufacturing guarantee.
 
 ```json
-{"action":"apply","design":"model.a3d.json","baseRevision":null,"changes":[{"kind":"add","target":"params.wall","value":{"type":"length","value":2}},{"kind":"add","target":"parts.body","value":{"result":"@body.shell"}},{"kind":"add","target":"body.shell","value":{"op":"open_box","size":[80,60,30],"wall":"=wall","floor":2}}]}
+{"action":"apply","design":"model.a3d.json","baseRevision":null,"changes":[{"kind":"add","target":"params.size","value":{"type":"length","value":80,"range":[50,100],"label":{"en":"Overall size","zh":"整体尺寸"}}},{"kind":"add","target":"params.wall","value":{"type":"length","value":2,"range":[1,4],"label":{"en":"Wall thickness","zh":"壁厚"}}},{"kind":"add","target":"parts.body","value":{"result":"@body.shell"}},{"kind":"add","target":"body.shell","value":{"op":"open_box","size":["=size","=size","=size"],"wall":"=wall","floor":"=wall"}}]}
 ```
 
 Save requests in the workspace and run `a3d agent design --args-file edits.json`. Keep stable IDs; batch related edits and use the returned revision.
