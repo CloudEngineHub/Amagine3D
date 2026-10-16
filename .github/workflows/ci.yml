@@ -97,6 +97,8 @@ jobs:
           cache: npm
       - run: npm ci
         if: runner.os == 'Windows'
+      - run: npm run python:setup
+        if: runner.os == 'Windows'
       - run: node --import tsx --test tests/model-parameters.test.ts
         if: runner.os == 'Windows'
       - run: python -m unittest tests.python.test_cpu_z_buffer
