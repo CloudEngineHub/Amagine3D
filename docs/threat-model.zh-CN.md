@@ -2,13 +2,37 @@
 
 > **English**: [View the English version](./threat-model.md)
 
-状态：Codex runtime 与本地 Tavily 搜索，2026-09-15
+状态：Codex runtime、本地 Tavily 搜索与 HTTP 安全，2026-10-16
 
 ## 安全边界
 
 Amagine3D 将模型输出、生成的命令与 Python、Web 搜索结果、导入的 ZIP 文件、恢复的项目数据、附件、URL 和文件名都视为不受信任的数据。每个产品会话由一个原生 Codex 进程在独立工作目录与状态目录中执行。运行策略为 `workspace-write` 加 `approvalPolicy: never`：命令可以在会话目录内直接写入且无需 UI 确认，目录外写入仍由沙箱拦截。
 
 模型提供商凭据只传给 Codex 进程。Codex 启动的命令使用非登录、core 级别的 shell 环境，并启用密钥名称过滤。配置 Tavily 搜索时，账户密钥只保留在 runtime 进程；每轮仅获得一个不可猜测的 loopback 临时能力，该能力只接受发往 Tavily 固定端点的受校验搜索，并在该轮结束时连同监听器一起销毁。账户凭据不会写入产品会话或导出压缩包。服务端设置 `CODEX_WEB_SEARCH_ENABLED=false` 时，会同时关闭联网研究与工作区网络。
+
+## HTTP 安全与部署假设
+
+Amagine3D 面向可信用户在本机使用。API 监听 `127.0.0.1`，尚无应用级用户身份认证。回环监听、浏览器响应头和会话目录隔离并不意味着可以向不可信用户或租户开放服务。远程开放需要另行设计身份认证、授权、TLS 和请求来源/CSRF 防护。
+
+`server/app.ts` 在 JSON 解析和路由之前注册安全响应头：
+
+| 控制 | 目的 |
+| --- | --- |
+| `X-Content-Type-Options: nosniff` | 防止浏览器把下载的源码或其他类型不匹配的内容当作脚本或样式执行。 |
+| `X-Frame-Options: DENY` 与 CSP `frame-ancestors 'none'` | 防止其他页面通过 frame 嵌入应用。 |
+| `Referrer-Policy: same-origin` | 跨源导航或资源请求不发送来源页面信息。 |
+| 禁用 `X-Powered-By` | 避免在响应中暴露 Express 标识；这不是访问控制。 |
+| `express.json({ limit: '18mb' })` | 限制 JSON 请求体大小，包括编码后的图片附件；这不是通用限流或执行时长限制。 |
+
+`Content-Security-Policy` 响应头仅允许同源脚本、字体与连接，禁止内联脚本、`eval`、worker、嵌入对象、frame 和基础 URL 覆盖。图片额外允许附件所需的 `data:` 和 3MF 内嵌纹理所需的 `blob:`。React 的面板尺寸和图片预览仍需内联样式；收紧这项例外需要修改样式实现，仅增加 nonce 不能授权 style 属性。未来如需内联脚本，应使用每次响应独立的 nonce 或构建时哈希，保留对其他内联脚本的限制。浏览器 CSP 不限制原生 Codex 进程及其网络访问。
+
+生成的 `.js` 和 `.mjs` 产物以 `text/plain` 配合 `nosniff` 返回，仍可阅读和下载，但不会因为产物 URL 与应用同源就成为可执行脚本。
+
+这些响应头保护执行 `npm run build` 和 `npm start` 后由 Express 提供的构建页面。执行 `npm run dev` 时，页面和 HMR 脚本由 Vite 单独提供；代理 API 响应上的 Express CSP 不会作用于该页面。Vite 目前没有应用自定义 CSP。开发服务应保持回环监听；未来为开发模式加入 CSP 时，需要处理 React Refresh 和 HMR WebSocket，而不能放宽构建页面的策略。
+
+Express API 有意不发送 CORS allow-origin 响应头。构建页面使用同源 API；开发模式通过 Vite 代理 `/api` 和 `/trpc`，从浏览器视角仍是同源请求。CORS 控制浏览器读取响应的权限，不提供身份认证或 CSRF 防护。未来支持独立前端来源时，需要明确的来源白名单，并审查凭据与请求来源处理。
+
+会话产物文件、生成的 ZIP 下载和 STEP 预览响应使用 `Cache-Control: no-store`，避免 HTTP 缓存保留可变项目数据。内置番茄钟文件响应使用 `public, max-age=31536000, immutable`，前提是这些 URL 在缓存有效期内对应的内容保持不变；更新内置资源时需要更换 URL 或调整缓存策略。这一区分不能替代产物路径校验，也不能保护用户下载后保存的文件。
 
 ## 威胁与控制
 
@@ -18,7 +42,7 @@ Amagine3D 将模型输出、生成的命令与 Python、Web 搜索结果、导�
 | AI 生成 Python | 危险导入、动态执行、无效或误导性几何 | 托管 Python、现有源码校验与白名单、编译期限、受限输出、产物回读、几何与新鲜度检查 | 校验无法证明零件适合安全制造；仍需复核尺寸、间隙、材料与打印设置。 |
 | Web 研究 | 提示注入、错误尺寸/规格或搜索账户密钥泄露 | 服务端控制启用；本地 `a3d search` 对请求与结果字段做白名单校验、固定 Tavily 端点、禁用原始正文与图片，并只下放每轮 loopback 临时能力；关闭联网研究时禁用网络 | 搜索摘要和目标网页仍可能错误或恶意。模型命令可在本轮使用临时搜索能力，且网络权限仍是粗粒度开关。制造前请复核引用的机械图纸。 |
 | ZIP 导入 | 路径穿越、重复路径、畸形目录、超大压缩包 | 仅 Stored ZIP32、拒绝不安全路径与重复项、CRC/校验和验证、条目数和 512 MiB 限制、修改前预检 | 合法的大型压缩包可能占用大量内存。只导入预期的项目备份。 |
-| XSS / Markdown | 可脚本化链接、HTML 注入、点击劫持 | React 渲染、不渲染原始 HTML、仅 HTTP(S) 外部链接、`noopener noreferrer`、CSP、禁止 frame、禁用 MIME 嗅探 | 当前 Vite 应用仍允许所需的内联样式；未来可用 nonce 进一步收紧。 |
+| XSS / Markdown | 可脚本化链接、HTML 注入、点击劫持 | React 渲染、不渲染原始 HTML、仅 HTTP(S) 外部链接、`noopener noreferrer`；Express 响应提供 CSP、禁止 frame 和 MIME 嗅探防护 | 构建页面允许内联样式。Vite 开发页面不受 Express 策略保护，详见上文 HTTP 安全部分。 |
 | 下载 | 类路径或控制字符文件名滥用 | 产物 schema、存储段校验、浏览器下载前的安全叶文件名规范化 | 操作系统仍可能改写文件名。在别处打开前请核实扩展名和内容。 |
 | 附件 | MIME 欺骗、超大图片、机密泄露 | MIME 加魔数校验、数量/字节/像素限制、附件哈希、服务端重新校验 | 图片会发送给已配置的提供商；除非其政策允许，否则不要附加机密材料。 |
 | 密钥 | 通过 UI、日志、生成命令、broker 请求或压缩包泄露 | 仅服务端配置、模型提供商密钥不进入 shell、Tavily 密钥由 runtime 保留、显式禁止读取 `.env`/`.env.local`、每轮临时搜索能力、非登录 shell、core 继承、密钥名称过滤、项目 schema 中无密钥 | 本地 `.env` 由操作方管理，不得提交。模型命令可使用本轮有效的搜索能力，但无法由此恢复 Tavily 账户密钥；疑似泄露后请轮换密钥。 |

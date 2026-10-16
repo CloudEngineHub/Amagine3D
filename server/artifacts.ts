@@ -149,7 +149,9 @@ export function artifactContentType(path: string): string {
       return 'application/json; charset=utf-8';
     case '.js':
     case '.mjs':
-      return 'text/javascript; charset=utf-8';
+      // Generated source shares the UI origin. With nosniff, plain text keeps
+      // it readable/downloadable without making it an allowed CSP script.
+      return 'text/plain; charset=utf-8';
     case '.md':
       return 'text/markdown; charset=utf-8';
     case '.png':

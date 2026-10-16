@@ -13,12 +13,32 @@ export type AppDependencies = TrpcContext & {
   openTurnExecutor?: TurnExecutorOpener;
 };
 
+// This policy governs the built UI served by Express. Vite serves its own
+// development HTML; see docs/threat-model.md for that separate boundary.
+const contentSecurityPolicy = [
+  "default-src 'self'",
+  "script-src 'self'",
+  // React uses inline styles for resizable panels and image previews.
+  "style-src 'self' 'unsafe-inline'",
+  // Attachments use data URLs; 3MF textures use object URLs.
+  "img-src 'self' data: blob:",
+  "font-src 'self'",
+  "connect-src 'self'",
+  "worker-src 'none'",
+  "object-src 'none'",
+  "frame-src 'none'",
+  "frame-ancestors 'none'",
+  "base-uri 'none'",
+  "form-action 'self'",
+].join('; ');
+
 export function createApp(dependencies: AppDependencies): Express {
   const { openTurnExecutor, paths, python, runtime, runtimeError } =
     dependencies;
   const app = express();
   app.disable('x-powered-by');
   app.use((_request, response, next) => {
+    response.setHeader('Content-Security-Policy', contentSecurityPolicy);
     response.setHeader('Referrer-Policy', 'same-origin');
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('X-Frame-Options', 'DENY');
