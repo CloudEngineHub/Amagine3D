@@ -56,9 +56,8 @@ const parameterValuesSchema = z
   });
 
 export const parameterBuildRequestSchema = z.strictObject({
-  primaryPreviewPath: artifactPathSchema,
-  sourceHash: z.string().regex(/^[a-f0-9]{64}$/u),
-  sourcePath: artifactPathSchema,
+  designPath: artifactPathSchema,
+  revision: z.string().regex(/^[a-f0-9]{64}$/u),
   values: parameterValuesSchema,
 });
 

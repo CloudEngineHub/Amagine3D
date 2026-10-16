@@ -50,7 +50,7 @@ test('legacy STEP uses an explicit read-only adapter while a GLB-only result sta
     assert.equal(old?.kind, 'other');
     assert.equal(old?.format, undefined);
     assert.ok(fileSectionArtifacts(collection!.artifacts).includes(old!));
-    assert.deepEqual(await parameterModelsForWorkspace(workspace, 'must-not-execute'), []);
+    assert.deepEqual(await parameterModelsForWorkspace(workspace, []), []);
     await rm(join(workspace, 'old.py'));
     await rm(join(workspace, 'old.stl'));
     const recovered = await userSessionArtifacts(root, SESSION_ID);

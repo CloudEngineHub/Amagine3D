@@ -170,12 +170,6 @@ const sessionsRouter = t.router({
           message: 'Invalid session id.',
         });
       }
-      if (!ctx.python.ready || !ctx.python.executable) {
-        throw new TRPCError({
-          code: 'SERVICE_UNAVAILABLE',
-          message: 'Python CAD runtime is not ready.',
-        });
-      }
       try {
         const collection = await userSessionArtifacts(
           ctx.paths.workspaceRoot,
@@ -184,8 +178,7 @@ const sessionsRouter = t.router({
         return {
           models: await parameterModelsForWorkspace(
             workspaceRoot,
-            ctx.python.executable,
-            collection?.artifacts,
+            collection?.artifacts ?? [],
           ),
         };
       } catch (error) {
@@ -213,12 +206,6 @@ const sessionsRouter = t.router({
           message: 'Invalid session id.',
         });
       }
-      if (!ctx.python.ready || !ctx.python.executable) {
-        throw new TRPCError({
-          code: 'SERVICE_UNAVAILABLE',
-          message: 'Python CAD runtime is not ready.',
-        });
-      }
       const releaseSession = acquireSessionActivity(sessionId);
       if (!releaseSession) {
         throw new TRPCError({
@@ -227,8 +214,10 @@ const sessionsRouter = t.router({
         });
       }
       try {
+        if (!ctx.python.ready) {
+          throw new ParameterBuildError('Python CAD runtime is not ready. Run npm run python:setup.', 503);
+        }
         await rebuildModelWithParameters({
-          pythonExecutable: ctx.python.executable,
           request,
           workspaceRoot,
         });
@@ -243,7 +232,6 @@ const sessionsRouter = t.router({
           ...collection,
           models: await parameterModelsForWorkspace(
             workspaceRoot,
-            ctx.python.executable,
             collection.artifacts,
           ),
         };

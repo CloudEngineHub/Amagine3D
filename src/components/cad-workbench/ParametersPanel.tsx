@@ -4,40 +4,6 @@ import type { ParameterModel } from '../../types';
 import type { Language } from './types';
 import { translator } from './types';
 
-interface ParameterGroup {
-  id: string;
-  label: string;
-  parameters: ParameterModel['parameters'];
-}
-
-function localizedText(
-  language: Language,
-  english: string,
-  chinese?: string,
-): string {
-  return language === 'zh' && chinese?.trim() ? chinese.trim() : english;
-}
-
-function groupedParameters(
-  model: ParameterModel,
-  language: Language,
-): ParameterGroup[] {
-  const groups = new Map<string, ParameterGroup>();
-  for (const parameter of model.parameters) {
-    const english = parameter.group?.trim();
-    const chinese = parameter.groupZh?.trim();
-    const id = english || chinese || '__general__';
-    const label =
-      language === 'zh'
-        ? chinese || english || '常规'
-        : english || chinese || 'General';
-    const group = groups.get(id);
-    if (group) group.parameters.push(parameter);
-    else groups.set(id, { id, label, parameters: [parameter] });
-  }
-  return [...groups.values()];
-}
-
 interface ParametersPanelProps {
   busy: boolean;
   collapsed: boolean;
@@ -66,7 +32,6 @@ export function ParametersPanel({
   values,
 }: ParametersPanelProps) {
   const text = translator(language);
-  const parameterGroups = model ? groupedParameters(model, language) : [];
   return (
     <aside
       aria-label={text('Model parameters', '模型参数')}
@@ -98,6 +63,8 @@ export function ParametersPanel({
       {collapsed ? null : (
         <div className={styles.parameterScroll}>
           {issue ? <div className={styles.parameterIssue}>{issue}</div> : null}
+          {model?.buildStatus === 'failed' ? <div className={styles.parameterIssue}>{text('The latest build did not pass. Current design values are shown; edit a parameter and try again.', '最近一次构建未通过。下方显示的是设计当前值；修改参数后可以再次尝试。')}</div> : null}
+          {model?.previewStale && model.buildStatus !== 'failed' ? <div className={styles.parameterIssue}>{text('The displayed model is from an earlier build. Current design values are shown; rebuild to refresh geometry.', '当前显示模型来自较早的构建。下方显示的是设计当前值；重新构建后几何会更新。')}</div> : null}
           {!model ? (
             <EmptyState
               className={styles.emptyState}
@@ -124,97 +91,78 @@ export function ParametersPanel({
             <EmptyState
               className={styles.emptyState}
               description={text(
-                'This complete model does not declare any parameter() controls.',
-                '这个完整模型尚未声明任何 parameter() 控件。',
+                'This design has no directly adjustable numeric parameters.',
+                '这个设计没有可直接调整的数值参数。',
               )}
               title={text('No declared parameters.', '没有已声明的参数。')}
             />
           ) : (
-            <div className={styles.parameterGroups}>
-              {parameterGroups.map((group) => (
-                <fieldset
-                  className={styles.parameterGroup}
-                  disabled={busy}
-                  key={group.id}
-                >
-                  <legend>{group.label}</legend>
-                  {group.parameters.map((parameter) => {
-                    const label = localizedText(
-                      language,
-                      parameter.label,
-                      parameter.labelZh,
-                    );
-                    const value = values[parameter.id] ?? parameter.value;
-                    const unit = parameter.unit ? ` ${parameter.unit}` : '';
-                    return (
-                      <div className={styles.parameterField} key={parameter.id}>
-                        <label htmlFor={`parameter-${parameter.id}`}>
-                          <span>{label}</span>
-                          <code>{parameter.name}</code>
-                        </label>
-                        <div className={styles.parameterValueRow}>
-                          <input
-                            id={`parameter-${parameter.id}`}
-                            max={parameter.maximum}
-                            min={parameter.minimum}
-                            onBlur={() => onCommit(parameter.id)}
-                            onChange={(event) => {
-                              const next = event.currentTarget.valueAsNumber;
-                              if (Number.isFinite(next)) {
-                                onValueChange(parameter.id, next);
-                              }
-                            }}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter') {
-                                event.currentTarget.blur();
-                              }
-                            }}
-                            step={parameter.step}
-                            type="number"
-                            value={value}
-                          />
-                          {parameter.unit ? <span>{parameter.unit}</span> : null}
-                        </div>
-                        <div className={styles.parameterRange}>
-                          <input
-                            aria-label={label}
-                            max={parameter.maximum}
-                            min={parameter.minimum}
-                            onChange={(event) =>
-                              onValueChange(
-                                parameter.id,
-                                event.currentTarget.valueAsNumber,
-                              )
-                            }
-                            onKeyUp={() => onCommit(parameter.id)}
-                            onPointerUp={() => onCommit(parameter.id)}
-                            step={parameter.step}
-                            type="range"
-                            value={value}
-                          />
-                          <small className={styles.parameterLimits}>
-                            <span>
-                              <b>MIN</b> {parameter.minimum}
-                              {unit}
-                            </span>
-                            <span>
-                              <b>MAX</b> {parameter.maximum}
-                              {unit}
-                            </span>
-                          </small>
-                        </div>
-                        {parameter.affects.length > 0 ? (
-                          <small className={styles.parameterAffects}>
-                            {text('Affects', '影响')}:{' '}
-                            {parameter.affects.join(', ')}
-                          </small>
-                        ) : null}
+            <fieldset className={styles.parameterGroup} disabled={busy || !model.editable}>
+              {model.parameters.map((parameter) => {
+                const value = values[parameter.id] ?? parameter.value;
+                const unit = parameter.unit ? ` ${parameter.unit}` : '';
+                return (
+                  <div className={styles.parameterField} key={parameter.id}>
+                    <label htmlFor={`parameter-${parameter.id}`}>
+                      {parameter.id}
+                    </label>
+                    <div className={styles.parameterValueRow}>
+                      <input
+                        id={`parameter-${parameter.id}`}
+                        max={parameter.maximum}
+                        min={parameter.minimum}
+                        onBlur={() => onCommit(parameter.id)}
+                        onChange={(event) => {
+                          const next = event.currentTarget.valueAsNumber;
+                          if (Number.isFinite(next)) {
+                            onValueChange(parameter.id, next);
+                          }
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.currentTarget.blur();
+                          }
+                        }}
+                        step={parameter.step}
+                        type="number"
+                        value={value}
+                      />
+                      {parameter.unit ? <span>{parameter.unit}</span> : null}
+                    </div>
+                    {parameter.minimum !== undefined && parameter.maximum !== undefined ? (
+                      <div className={styles.parameterRange}>
+                        <input
+                          aria-label={parameter.id}
+                          max={parameter.maximum}
+                          min={parameter.minimum}
+                          onChange={(event) =>
+                            onValueChange(
+                              parameter.id,
+                              event.currentTarget.valueAsNumber,
+                            )
+                          }
+                          onKeyUp={() => onCommit(parameter.id)}
+                          onPointerUp={() => onCommit(parameter.id)}
+                          step={parameter.step}
+                          type="range"
+                          value={value}
+                        />
+                        <small className={styles.parameterLimits}>
+                          <span>
+                            <b>MIN</b> {parameter.minimum}
+                            {unit}
+                          </span>
+                          <span>
+                            <b>MAX</b> {parameter.maximum}
+                            {unit}
+                          </span>
+                        </small>
                       </div>
-                    );
-                  })}
-                </fieldset>
-              ))}
-            </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </fieldset>
           )}
         </div>
       )}

@@ -136,6 +136,8 @@ export type ArtifactPurpose = 'display-preview' | 'draft-preview' | 'diagnostic-
 export interface ArtifactSummary {
   /** Stable design/source identity shared by its drafts and subsequent builds. */
   designId?: string;
+  /** Hash-bound DSL inputs from the run report. */
+  designPath?: string;
   partId?: string;
   legacy?: boolean;
   manufacturingStatus?: string;
@@ -175,17 +177,10 @@ export interface ArtifactCollection {
 }
 
 export interface ModelParameter {
-  affects: string[];
-  defaultValue: number;
-  group?: string;
-  groupZh?: string;
   id: string;
   kind: 'integer' | 'number';
-  label: string;
-  labelZh?: string;
-  maximum: number;
-  minimum: number;
-  name: string;
+  maximum?: number;
+  minimum?: number;
   step: number;
   unit?: string;
   value: number;
@@ -201,8 +196,11 @@ export interface ParameterModel {
   parameters: ModelParameter[];
   primaryPreviewPath: string;
   reportPath: string;
-  sourceHash: string;
-  sourcePath: string;
+  designPath: string;
+  revision: string;
+  editable: boolean;
+  previewStale?: boolean;
+  buildStatus?: 'draft' | 'failed' | 'validated';
 }
 
 export interface ParameterCollection {

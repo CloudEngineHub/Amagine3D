@@ -13,6 +13,7 @@ import styles from './CadWorkbench.module.css';
 import { AppBarControls } from './cad-workbench/AppBarControls';
 import { LeftPanel } from './cad-workbench/LeftPanel';
 import { ParametersPanel } from './cad-workbench/ParametersPanel';
+import { editableParameterPreviewPath } from './cad-workbench/parameterPreview';
 import { PreviewPanel } from './cad-workbench/PreviewPanel';
 import {
   StorageDrawer,
@@ -222,6 +223,7 @@ export function CadWorkbench({
     function selectArtifact(artifact: ArtifactSummary, revealFiles = true) {
       followLatestRef.current = false;
       setFollowLatest(false);
+      setParameterIssue(undefined);
       setSelectedPath(artifact.path);
       if (revealFiles && (artifact.kind === 'model' || artifact.kind === 'image')) {
         setLeftView('files');
@@ -462,7 +464,6 @@ export function CadWorkbench({
     }, [storageOpen]);
 
     useEffect(() => {
-      setParameterIssue(undefined);
       setParameterValues(
         activeParameterModel
           ? Object.fromEntries(
@@ -473,7 +474,7 @@ export function CadWorkbench({
             )
           : {},
       );
-    }, [activeParameterModel]);
+    }, [activeParameterModel?.primaryPreviewPath, activeParameterModel?.revision]);
 
     useEffect(() => {
       const pollInterval = 30_000;
@@ -726,16 +727,32 @@ export function CadWorkbench({
         setArtifacts(next.artifacts);
         setArtifactWorkspace(next.artifactWorkspace);
         setParameterModels(next.models);
-        setSelectedPath(model.displayPreviewPath);
+        setSelectedPath(editableParameterPreviewPath(next.models, model.designPath, model.revision) ?? model.displayPreviewPath);
         setPrintPreview(false);
       } catch (error) {
         if (!isCurrentSession()) return;
-        setParameterIssue(errorText(error, language));
-        setParameterValues(
-          Object.fromEntries(
-            model.parameters.map((item) => [item.id, item.value]),
-          ),
-        );
+        const message = errorText(error, language);
+        try {
+          const [collection, parameters] = await Promise.all([
+            fetchArtifacts(sessionId), fetchModelParameters(sessionId),
+          ]);
+          if (isCurrentSession()) {
+            setArtifacts(collection.artifacts);
+            setArtifactWorkspace(collection.artifactWorkspace);
+            setParameterModels(parameters.models);
+            const refreshedModel = parameters.models.find((candidate) =>
+              candidate.editable && candidate.designPath === model.designPath);
+            if (refreshedModel) {
+              setParameterValues(Object.fromEntries(
+                refreshedModel.parameters.map(({ id, value }) => [id, value]),
+              ));
+              setSelectedPath(refreshedModel.displayPreviewPath);
+            } else {
+              setSelectedPath(model.displayPreviewPath);
+            }
+          }
+        } catch { /* Keep the build error visible if the refresh also fails. */ }
+        if (isCurrentSession()) setParameterIssue(message);
       } finally {
         parameterBuildingRef.current = false;
         setParameterBuilding(false);

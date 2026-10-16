@@ -101,11 +101,6 @@
   line-height: 1.5;
 }
 
-.parameterGroups {
-  display: grid;
-  gap: var(--space-lg);
-}
-
 .parameterGroup {
   display: grid;
   padding: var(--space-md);
@@ -114,15 +109,6 @@
   margin: 0;
   background: color-mix(in srgb, var(--color-fill) 38%, transparent);
   gap: var(--space-md);
-}
-
-.parameterGroup legend {
-  width: auto;
-  padding: 0 var(--space-xs);
-  color: var(--color-ink-soft);
-  font-family: var(--font-display);
-  font-size: var(--text-base);
-  font-weight: 600;
 }
 
 .parameterField {
@@ -138,15 +124,6 @@
   gap: var(--space-sm);
   font-size: var(--text-sm);
   font-weight: 600;
-}
-
-.parameterField code {
-  overflow: hidden;
-  color: var(--color-muted);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  font-weight: 400;
-  text-overflow: ellipsis;
 }
 
 .parameterValueRow {
@@ -169,15 +146,10 @@
 }
 
 .parameterValueRow span,
-.parameterLimits,
-.parameterAffects {
+.parameterLimits {
   color: var(--color-muted);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
-}
-
-.parameterAffects {
-  overflow-wrap: anywhere;
 }
 
 .parameterRange {

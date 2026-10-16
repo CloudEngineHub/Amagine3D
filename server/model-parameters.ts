@@ -1,629 +1,229 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import {
-  mkdir,
-  mkdtemp,
-  readFile,
-  realpath,
-  rename,
-  rm,
-  stat,
-  writeFile,
-} from 'node:fs/promises';
-import {
-  basename,
-  delimiter,
-  dirname,
-  isAbsolute,
-  join,
-  relative,
-  resolve,
-  sep,
-} from 'node:path';
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
-import type {
-  ArtifactSummary,
-  ModelParameter,
-  ParameterModel,
-} from '../src/types.ts';
-import { scanArtifacts } from './artifacts.ts';
-import { validateUnifiedBuildReport } from './build-report.ts';
-import { discoverModelBuilds, type ModelBuild } from './model-builds.ts';
+import type { ArtifactSummary, ModelParameter, ParameterModel } from '../src/types.ts';
+import { readActiveDesignBinding } from './cad-run-evidence.ts';
+import { discoverModelBuilds } from './model-builds.ts';
 import type { ParameterBuildRequest } from './trpc/schemas.ts';
 
-const PARAMETER_SOURCE_SCRIPT = resolve(
-  import.meta.dirname,
-  'parameter_source.py',
-);
-const PUBLIC_RUNTIME_ROOT = resolve(
-  import.meta.dirname,
-  '..',
-  'skills',
-  'a3d-public',
-);
-const MAX_PROCESS_OUTPUT_BYTES = 2 * 1024 * 1024;
-const PARAMETER_BUILD_TIMEOUT_MS = 180_000;
-
-interface ParameterSourceResponse {
-  error?: string;
-  ok: boolean;
-  parameters?: ModelParameter[];
-  source?: string;
-}
+const CLI = resolve(import.meta.dirname, '../bin/a3d.mjs');
+const MAX_OUTPUT = 2 * 1024 * 1024;
 
 export class ParameterBuildError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-  ) {
+  constructor(message: string, readonly status: number) {
     super(message);
     this.name = 'ParameterBuildError';
   }
 }
 
-function sha256(value: string | Buffer): string {
-  return createHash('sha256').update(value).digest('hex');
+function hash(bytes: string | Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex');
 }
 
-function safeGeneratedArtifactPath(path: string, label: string): string {
-  const segments = path.split(/[\\/]/u);
-  if (
-    isAbsolute(path) ||
-    path.includes('\0') ||
-    segments.length === 0 ||
-    segments.some((segment) => !segment || segment === '.' || segment === '..')
-  ) {
-    throw new ParameterBuildError(
-      `${label} must stay inside the session workspace.`,
-      400,
-    );
-  }
-  return path;
-}
-
-async function runJsonProcess(
-  executable: string,
-  args: string[],
-  input: unknown,
-  options: {
-    cwd?: string;
-    env?: NodeJS.ProcessEnv;
-    timeoutMs?: number;
-  } = {},
-): Promise<string> {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(executable, args, {
-      cwd: options.cwd,
-      env: options.env ?? process.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    let outputBytes = 0;
-    let settled = false;
-    const finish = (error?: Error, output?: string) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (error) rejectPromise(error);
-      else resolvePromise(output ?? '');
-    };
-    const append = (target: 'stderr' | 'stdout', chunk: Buffer) => {
-      outputBytes += chunk.byteLength;
-      if (outputBytes > MAX_PROCESS_OUTPUT_BYTES) {
-        child.kill('SIGKILL');
-        finish(new Error('CAD parameter process produced too much output.'));
-        return;
-      }
-      if (target === 'stdout') stdout += chunk.toString('utf8');
-      else stderr += chunk.toString('utf8');
-    };
-    child.stdout.on('data', (chunk: Buffer) => append('stdout', chunk));
-    child.stderr.on('data', (chunk: Buffer) => append('stderr', chunk));
-    child.once('error', (error) => finish(error));
-    child.once('close', (code, signal) => {
-      if (code === 0) finish(undefined, stdout);
-      else {
-        const detail = (stderr || stdout).trim().slice(-4_000);
-        finish(
-          new Error(
-            detail ||
-              `CAD parameter process exited with ${signal ?? String(code)}.`,
-          ),
-        );
-      }
-    });
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      finish(new Error('CAD parameter build timed out.'));
-    }, options.timeoutMs ?? 30_000);
-    child.stdin.end(JSON.stringify(input));
-  });
-}
-
-async function parameterSource(
-  pythonExecutable: string,
-  input: Record<string, unknown>,
-): Promise<ParameterSourceResponse> {
-  let parsed: ParameterSourceResponse;
+async function agent(workspaceRoot: string, operation: string, request: Record<string, unknown>): Promise<Record<string, any>> {
+  const directory = join(workspaceRoot, '.a3d-agent', 'parameter-requests');
+  await mkdir(directory, { recursive: true });
+  const requestDir = await mkdtemp(join(directory, 'request-'));
+  const argsFile = join(requestDir, 'request.json');
   try {
-    parsed = JSON.parse(
-      await runJsonProcess(
-        pythonExecutable,
-        [PARAMETER_SOURCE_SCRIPT],
-        input,
-        { env: { ...process.env, PYTHONIOENCODING: 'utf-8' } },
-      ),
-    ) as ParameterSourceResponse;
-  } catch (error) {
-    throw new ParameterBuildError(
-      error instanceof Error ? error.message : 'Unable to inspect CAD source.',
-      422,
-    );
+    const canonicalRoot = await realpath(workspaceRoot);
+    const canonicalRequest = await realpath(requestDir);
+    const requestLocal = relative(canonicalRoot, canonicalRequest);
+    if (!requestLocal || isAbsolute(requestLocal) || requestLocal === '..' || requestLocal.startsWith(`..${sep}`)) {
+      throw new ParameterBuildError('Parameter request escaped the session workspace.', 400);
+    }
+    await writeFile(argsFile, JSON.stringify(request), 'utf8');
+    const output = await new Promise<{ stdout: string; stderr: string; code: number }>((resolvePromise, rejectPromise) => {
+      const child = spawn(process.execPath, [CLI, 'agent', operation, '--args-file', relative(canonicalRoot, argsFile)], {
+        cwd: workspaceRoot,
+        detached: process.platform !== 'win32',
+        env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      let bytes = 0;
+      let settled = false;
+      let timer: NodeJS.Timeout;
+      const finish = (error?: Error, result?: { stdout: string; stderr: string; code: number }) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (error) rejectPromise(error); else resolvePromise(result!);
+      };
+      const terminate = () => {
+        if (process.platform !== 'win32' && child.pid) {
+          try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
+        } else if (process.platform === 'win32' && child.pid) {
+          const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+          killer.once('error', () => child.kill('SIGKILL'));
+          killer.unref();
+        } else child.kill('SIGKILL');
+      };
+      const collect = (target: 'stdout' | 'stderr', chunk: Buffer) => {
+        bytes += chunk.length;
+        if (bytes > MAX_OUTPUT) {
+          terminate();
+          finish(new ParameterBuildError('CAD parameter process produced too much output.', 422));
+          return;
+        }
+        if (target === 'stdout') stdout += chunk.toString('utf8'); else stderr += chunk.toString('utf8');
+      };
+      child.stdout.on('data', (chunk: Buffer) => collect('stdout', chunk));
+      child.stderr.on('data', (chunk: Buffer) => collect('stderr', chunk));
+      child.once('error', (error) => finish(error));
+      child.once('close', (code) => finish(undefined, { stdout, stderr, code: code ?? 1 }));
+      timer = setTimeout(() => {
+        terminate();
+        finish(new ParameterBuildError('CAD parameter build timed out.', 422));
+      }, 180_000);
+    });
+    let result: Record<string, any>;
+    try { result = JSON.parse(output.stdout) as Record<string, any>; }
+    catch { throw new ParameterBuildError(output.stderr.trim().slice(-2_000) || 'CAD parameter operation returned invalid JSON.', 422); }
+    if (result.status === 'failed' || result.status === 'api-error' || output.code !== 0) {
+      let reportIssue: string | undefined;
+      if (result.report?.path && /^[a-f0-9]{64}$/u.test(result.report.sha256 ?? '')) {
+        try {
+          const root = await realpath(workspaceRoot);
+          const reportPath = await realpath(resolve(root, result.report.path));
+          const local = relative(root, reportPath);
+          if (local && !isAbsolute(local) && local !== '..' && !local.startsWith(`..${sep}`) && (await stat(reportPath)).size <= MAX_OUTPUT) {
+            const reportBytes = await readFile(reportPath);
+            if (hash(reportBytes) === result.report.sha256) {
+              const report = JSON.parse(reportBytes.toString('utf8'));
+              reportIssue = report.issues?.[0]?.message;
+            }
+          }
+        } catch { /* Preserve the bounded error if the optional report cannot be read. */ }
+      }
+      const issue = result.error?.message ?? result.issues?.[0]?.message ?? reportIssue ??
+        (result.issues?.[0] ? JSON.stringify(result.issues[0]) : undefined);
+      const detail = issue ?? JSON.stringify(result).slice(0, 1_500);
+      throw new ParameterBuildError(detail || `CAD ${operation} failed (${result.status ?? output.code}).`, result.status === 'failed' ? 422 : 409);
+    }
+    return result;
+  } finally {
+    await rm(requestDir, { recursive: true, force: true });
   }
-  if (!parsed.ok) {
-    throw new ParameterBuildError(
-      parsed.error || 'Unable to inspect CAD source.',
-      422,
-    );
-  }
-  return parsed;
 }
 
-async function inspectSource(
-  pythonExecutable: string,
-  source: string,
-): Promise<ModelParameter[]> {
-  const response = await parameterSource(pythonExecutable, {
-    operation: 'inspect',
-    source,
-  });
-  if (!Array.isArray(response.parameters)) {
-    throw new ParameterBuildError(
-      'CAD parameter inspector returned no parameter list.',
-      422,
-    );
+async function readDesignParameters(workspaceRoot: string, designPath: string, revision: string): Promise<ModelParameter[]> {
+  const source = resolve(workspaceRoot, designPath);
+  const root = await realpath(workspaceRoot);
+  const path = await realpath(source);
+  const local = relative(root, path);
+  const bytes = await readFile(path);
+  if (!local || isAbsolute(local) || local === '..' || local.startsWith(`..${sep}`) || hash(bytes) !== revision) {
+    throw new ParameterBuildError('The active design changed; reload parameters before editing.', 409);
   }
-  return response.parameters;
-}
-
-async function rewriteSource(
-  pythonExecutable: string,
-  source: string,
-  values: Record<string, number>,
-): Promise<string> {
-  const response = await parameterSource(pythonExecutable, {
-    operation: 'rewrite',
-    source,
-    values,
-  });
-  if (typeof response.source !== 'string') {
-    throw new ParameterBuildError(
-      'CAD parameter rewriter returned no source.',
-      422,
-    );
+  const document = JSON.parse(bytes.toString('utf8')) as Record<string, any>;
+  const definitions = document.params && typeof document.params === 'object' && !Array.isArray(document.params)
+    ? document.params as Record<string, Record<string, any>> : {};
+  const parameters: ModelParameter[] = [];
+  for (const [id, definition] of Object.entries(definitions)) {
+    if (!definition || !['length', 'angle', 'scalar', 'integer'].includes(definition.type) ||
+      typeof definition.value !== 'number' || !Number.isFinite(definition.value)) continue;
+    const range = Array.isArray(definition.range) ? definition.range : undefined;
+    const minimum = typeof range?.[0] === 'number' ? range[0] : undefined;
+    const maximum = typeof range?.[1] === 'number' ? range[1] : undefined;
+    parameters.push({
+      id, kind: definition.type === 'integer' ? 'integer' : 'number',
+      step: definition.type === 'integer' ? 1 : 0.01,
+      ...(definition.type === 'length' ? { unit: 'mm' } : definition.type === 'angle' ? { unit: 'deg' } : {}),
+      ...(minimum !== undefined ? { minimum } : {}), ...(maximum !== undefined ? { maximum } : {}),
+      value: definition.value,
+    });
   }
-  return response.source;
+  return parameters;
 }
 
 export async function parameterModelsForWorkspace(
   workspaceRoot: string,
-  pythonExecutable: string,
-  artifacts?: readonly ArtifactSummary[],
+  artifacts: readonly ArtifactSummary[],
 ): Promise<ParameterModel[]> {
-  const availableArtifacts = artifacts ?? (await scanArtifacts(workspaceRoot));
-  const builds = (
-    await discoverModelBuilds(workspaceRoot, availableArtifacts)
-  ).filter(
-    (build): build is ModelBuild & { sourcePath: string } =>
-      typeof build.sourcePath === 'string' && !build.legacy,
-  );
-  return Promise.all(
-    builds.map(async (build) => {
-      const source = await readFile(
-        resolve(workspaceRoot, build.sourcePath),
-        'utf8',
-      );
-      try {
-        return {
-          ...build,
-          parameters: await inspectSource(pythonExecutable, source),
-          sourceHash: sha256(source),
-        };
-      } catch (error) {
-        return {
-          ...build,
-          parameterError:
-            error instanceof Error
-              ? error.message
-              : 'Unable to inspect model parameters.',
-          parameters: [],
-          sourceHash: sha256(source),
-        };
-      }
-    }),
-  );
-}
-
-async function requireCandidateFiles(
-  outDir: string,
-  build: ModelBuild,
-  workspaceRoot: string,
-): Promise<string[]> {
-  const candidate = await validateUnifiedBuildReport(
-    workspaceRoot,
-    join(outDir, build.reportPath),
-  );
-  if (
-    !candidate || candidate.report.part !== build.modelId ||
-    candidate.inputPaths.source !== await realpath(join(workspaceRoot, build.sourcePath!))
-  ) {
-    throw new ParameterBuildError('Parameter build did not produce a valid report for this model.', 422);
+  const binding = await readActiveDesignBinding(workspaceRoot);
+  if (!binding) return [];
+  const availableArtifacts = artifacts;
+  const builds = await discoverModelBuilds(workspaceRoot, availableArtifacts);
+  const related = builds.flatMap((build) => {
+    const evidence = availableArtifacts.find((artifact) => artifact.kind === 'model' &&
+      build.artifactPaths.includes(artifact.path) && artifact.designPath === binding.designPath);
+    return evidence ? [{ build, evidence }] : [];
+  });
+  const associated = new Set(related.flatMap(({ build }) => build.artifactPaths));
+  const fallbackRuns = new Map<string, ArtifactSummary[]>();
+  for (const evidence of availableArtifacts) {
+    if (evidence.kind !== 'model' || evidence.designPath !== binding.designPath || associated.has(evidence.path)) continue;
+    const key = evidence.buildId ?? evidence.path;
+    fallbackRuns.set(key, [...(fallbackRuns.get(key) ?? []), evidence]);
   }
-  // A size change can change the plate count. Promote the newly validated
-  // inventory; every output must have been generated inside this staging job.
-  const canonicalOutDir = await realpath(outDir);
-  const paths = [...new Set([
-    ...Object.values(candidate.artifactPaths).map((path) => relative(canonicalOutDir, path)),
-    ...Object.values(candidate.inputPaths).filter((path) => path.startsWith(canonicalOutDir + sep)).map((path) => relative(canonicalOutDir, path)),
-    build.reportPath,
-  ])];
-  // BuildSession creates a new scene with bound feature witnesses in this job.
-  // Include those inputs in the same transaction as the model they describe.
-  if (candidate.inputPaths.scene?.startsWith(canonicalOutDir + sep)) {
-    const scene = JSON.parse(await readFile(candidate.inputPaths.scene, 'utf8'));
-    const collect = (value: unknown) => {
-      if (!value || typeof value !== 'object') return;
-      const ref = value as Record<string, unknown>;
-      if (typeof ref.path === 'string' && typeof ref.sha256 === 'string') {
-        const path = resolve(dirname(candidate.inputPaths.scene!), ref.path);
-        if (path.startsWith(canonicalOutDir + sep)) paths.push(relative(canonicalOutDir, path));
-      }
-      Object.values(ref).forEach(collect);
+  for (const [runId, members] of fallbackRuns) {
+    const primary = members.find((artifact) => artifact.primary) ?? members[0]!;
+    const paths = members.map((artifact) => artifact.path);
+    related.push({ evidence: primary, build: {
+      artifactPaths: paths, displayPreviewPath: members.find((artifact) => artifact.purpose === 'display-preview')?.path ?? primary.path,
+      modelId: primary.modelId ?? primary.name, primaryPreviewPath: primary.path, reportPath: '',
+      topLevelArtifactPaths: paths, runId: runId === primary.path ? primary.buildId : runId,
+    } });
+  }
+  if (!related.length) return [];
+  const parameters = await readDesignParameters(workspaceRoot, binding.designPath, binding.revision);
+  const newest = (items: typeof related) => [...items].sort((left, right) => Date.parse(right.evidence.modifiedAt) - Date.parse(left.evidence.modifiedAt))[0];
+  const currentGroup = newest(related.filter(({ evidence }) => evidence.revision === binding.revision && evidence.inputsCurrent === true)) ??
+    newest(related);
+  return related.map(({ build, evidence }) => {
+    const activeDesign = currentGroup === related.find((group) => group.build.runId === build.runId && group.evidence.path === evidence.path);
+    const buildStatus = activeDesign ? binding.buildStatus : evidence.status === 'diagnostic' ? 'failed' : evidence.status;
+    return {
+      artifactPaths: build.artifactPaths,
+      displayPreviewPath: build.displayPreviewPath,
+      modelId: build.modelId,
+      parameters: activeDesign ? parameters : [],
+      primaryPreviewPath: build.primaryPreviewPath,
+      reportPath: build.reportPath,
+      designPath: binding.designPath,
+      revision: activeDesign ? binding.revision : evidence.revision ?? '',
+      editable: activeDesign,
+      previewStale: activeDesign && (evidence.inputsCurrent !== true || evidence.revision !== binding.revision),
+      ...(buildStatus ? { buildStatus } : {}),
+      ...(build.runId ? { runId: build.runId } : {}),
+      ...(!activeDesign ? { parameterError: 'This model is from an earlier design revision and is read-only.' } : {}),
     };
-    collect(scene);
-  }
-  for (const path of paths) {
-    safeGeneratedArtifactPath(path, 'Generated artifact');
-    try {
-      const metadata = await stat(join(outDir, path));
-      if (!metadata.isFile()) throw new Error('not a file');
-    } catch {
-      throw new ParameterBuildError(
-        `Parameter build did not regenerate ${path}.`,
-        422,
-      );
-    }
-  }
-  return [...new Set(paths)];
-}
-
-function rebaseReportPaths(
-  value: unknown,
-  outputRoots: readonly string[],
-  workspaceRoot: string,
-): unknown {
-  if (typeof value === 'string') {
-    for (const outputRoot of outputRoots) {
-      const prefix = `${outputRoot}${sep}`;
-      if (value.startsWith(prefix)) {
-        return join(workspaceRoot, value.slice(prefix.length));
-      }
-    }
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) =>
-      rebaseReportPaths(item, outputRoots, workspaceRoot),
-    );
-  }
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [
-        key,
-        rebaseReportPaths(item, outputRoots, workspaceRoot),
-      ]),
-    );
-  }
-  return value;
-}
-
-function absoluteFileBindings(value: unknown, baseDir: string): unknown {
-  if (Array.isArray(value)) return value.map((item) => absoluteFileBindings(item, baseDir));
-  if (!value || typeof value !== 'object') return value;
-  const record = value as Record<string, unknown>;
-  return Object.fromEntries(Object.entries(record).map(([key, item]) => [key,
-    key === 'path' && typeof item === 'string' && typeof record.sha256 === 'string'
-      ? resolve(baseDir, item) : absoluteFileBindings(item, baseDir)]));
-}
-
-async function prepareCandidateReport(
-  reportPath: string,
-  outDir: string,
-  workspaceRoot: string,
-  sourcePath: string,
-  sourceHash: string,
-  values: Record<string, number>,
-  destinationRoot = workspaceRoot,
-): Promise<void> {
-  const raw = JSON.parse(await readFile(reportPath, 'utf8')) as Record<
-    string,
-    unknown
-  >;
-  const canonicalOutDir = await realpath(outDir);
-  const canonicalWorkspaceRoot = await realpath(workspaceRoot);
-  const canonicalDestinationRoot = await realpath(destinationRoot);
-  const report = rebaseReportPaths(
-    raw,
-    [...new Set([outDir, canonicalOutDir])],
-    canonicalDestinationRoot,
-  ) as Record<string, unknown>;
-  const rawArtifacts = raw.artifacts as Record<string, unknown> | undefined;
-  const rawAuditReference = rawArtifacts?.exportAudit as
-    | Record<string, unknown>
-    | undefined;
-  if (rawAuditReference) {
-    if (
-      typeof rawAuditReference.path !== 'string' ||
-      typeof rawAuditReference.sha256 !== 'string'
-    ) {
-      throw new ParameterBuildError(
-        'BRep export audit reference is malformed.',
-        422,
-      );
-    }
-    const auditCandidate = isAbsolute(rawAuditReference.path)
-      ? rawAuditReference.path
-      : resolve(dirname(reportPath), rawAuditReference.path);
-    const auditPath = await realpath(auditCandidate);
-    const auditRelativePath = relative(canonicalOutDir, auditPath);
-    if (
-      auditRelativePath === '' ||
-      auditRelativePath === '..' ||
-      auditRelativePath.startsWith(`..${sep}`)
-    ) {
-      throw new ParameterBuildError(
-        'BRep export audit must stay inside the staged output.',
-        422,
-      );
-    }
-    const auditBytes = await readFile(auditPath);
-    if (sha256(auditBytes) !== rawAuditReference.sha256) {
-      throw new ParameterBuildError(
-        'BRep export audit hash does not match its staged bytes.',
-        422,
-      );
-    }
-    const rawAudit = JSON.parse(auditBytes.toString('utf8')) as unknown;
-    const audit = rebaseReportPaths(
-      rawAudit,
-      [...new Set([outDir, canonicalOutDir])],
-      canonicalDestinationRoot,
-    );
-    const auditPayload = `${JSON.stringify(audit, null, 2)}\n`;
-    await writeFile(auditPath, auditPayload, 'utf8');
-    const artifacts = report.artifacts as Record<string, unknown> | undefined;
-    const auditReference = artifacts?.exportAudit as
-      | Record<string, unknown>
-      | undefined;
-    const backendData = report.backendData as
-      | Record<string, unknown>
-      | undefined;
-    if (!auditReference || !backendData) {
-      throw new ParameterBuildError(
-        'BRep export audit bindings are incomplete.',
-        422,
-      );
-    }
-    auditReference.path = join(canonicalDestinationRoot, auditRelativePath);
-    auditReference.sha256 = sha256(auditPayload);
-    backendData.exportAudit = audit;
-  }
-  const displayScene = (rawArtifacts?.['step:display'] as Record<string, unknown> | undefined)?.scene as { path: string; sha256: string } | undefined;
-  if (displayScene) {
-    const path = await realpath(displayScene.path);
-    const local = relative(canonicalOutDir, path);
-    safeGeneratedArtifactPath(local, 'STEP display scene');
-    const bytes = await readFile(path);
-    if (sha256(bytes) !== displayScene.sha256) throw new ParameterBuildError('STEP display scene changed.', 422);
-    const scene = rebaseReportPaths(JSON.parse(bytes.toString('utf8')), [...new Set([outDir, canonicalOutDir])], canonicalDestinationRoot);
-    const payload = JSON.stringify(scene) + '\n';
-    await writeFile(path, payload, 'utf8');
-    const artifact = (report.artifacts as Record<string, Record<string, unknown>>)['step:display']!;
-    artifact.scene = { path: join(canonicalDestinationRoot, local), sha256: sha256(payload) };
-  }
-  const rawScene = (raw.inputs as Record<string, { path: string; sha256: string }> | undefined)?.scene;
-  if (rawScene) {
-    const path = await realpath(resolve(dirname(reportPath), rawScene.path));
-    if (path.startsWith(canonicalOutDir + sep)) {
-      const payload = JSON.stringify(rebaseReportPaths(absoluteFileBindings(JSON.parse(await readFile(path, 'utf8')), dirname(path)), [...new Set([outDir, canonicalOutDir])], canonicalDestinationRoot), null, 2) + '\n';
-      await writeFile(path, payload, 'utf8');
-      (report.inputs as Record<string, unknown>).scene = { ...rawScene, path: join(canonicalDestinationRoot, relative(canonicalOutDir, path)), sha256: sha256(payload) };
-    }
-  }
-  if (!report.inputs || typeof report.inputs !== 'object') {
-    throw new ParameterBuildError(
-      'Unified build report has no inputs object.',
-      422,
-    );
-  }
-  (report.inputs as Record<string, unknown>).source = {
-    path: join(canonicalWorkspaceRoot, sourcePath),
-    schema: 'python-source/v1',
-    sha256: sourceHash,
-  };
-  const backendData = report.backendData;
-  if (backendData && typeof backendData === 'object') {
-    const parameters = (backendData as Record<string, unknown>).parameters;
-    if (parameters && typeof parameters === 'object') {
-      const records = parameters as Record<string, Record<string, unknown>>;
-      for (const [id, parameterValue] of Object.entries(values)) {
-        if (records[id]) {
-          records[id].default = parameterValue;
-          records[id].value = parameterValue;
-        }
-      }
-    }
-  }
-  await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
-}
-
-async function promoteFiles(
-  files: Array<{ from: string; to: string }>,
-  backupDir: string,
-  verify?: () => Promise<void>,
-): Promise<void> {
-  await mkdir(backupDir, { recursive: true });
-  const backups: Array<{ from: string; to: string }> = [];
-  const installed: string[] = [];
-  try {
-    for (const [index, file] of files.entries()) {
-      try {
-        await stat(file.to);
-      } catch {
-        continue;
-      }
-      const backup = join(backupDir, `${String(index)}-${basename(file.to)}`);
-      await rename(file.to, backup);
-      backups.push({ from: backup, to: file.to });
-    }
-    for (const file of files) {
-      await mkdir(dirname(file.to), { recursive: true });
-      await rename(file.from, file.to);
-      installed.push(file.to);
-    }
-    await verify?.();
-  } catch (error) {
-    await Promise.all(installed.map((path) => rm(path, { force: true })));
-    for (const backup of [...backups].reverse()) {
-      await rename(backup.from, backup.to).catch(() => undefined);
-    }
-    throw error;
-  }
-}
-
-async function executeParameterBuild(
-  pythonExecutable: string,
-  sourcePath: string,
-  workspaceRoot: string,
-  outDir: string,
-  values: Record<string, number>,
-  intentPath?: string,
-): Promise<void> {
-  try {
-    await runJsonProcess(
-      pythonExecutable,
-      [sourcePath],
-      {},
-      {
-        cwd: workspaceRoot,
-        env: {
-          ...process.env,
-          AMAGINE3D_OUTPUT_DIR: outDir,
-          AMAGINE3D_PARAMETER_OVERRIDES: JSON.stringify(values),
-          ...(intentPath ? { AMAGINE3D_INTENT_PATH: intentPath, AMAGINE3D_SCENE_PATH: join(outDir, 'parameter_scene.json') } : {}),
-          MPLBACKEND: 'Agg',
-          PYTHONPATH: [PUBLIC_RUNTIME_ROOT, process.env.PYTHONPATH]
-            .filter(Boolean)
-            .join(delimiter),
-          PYTHONDONTWRITEBYTECODE: '1',
-        },
-        timeoutMs: PARAMETER_BUILD_TIMEOUT_MS,
-      },
-    );
-  } catch (error) {
-    throw new ParameterBuildError(
-      error instanceof Error ? error.message : 'Parameter build failed.',
-      422,
-    );
-  }
+  });
 }
 
 export async function rebuildModelWithParameters(options: {
-  pythonExecutable: string;
   request: ParameterBuildRequest;
   workspaceRoot: string;
 }): Promise<void> {
-  const { pythonExecutable, request, workspaceRoot } = options;
-  safeGeneratedArtifactPath(request.sourcePath, 'Model source');
-  safeGeneratedArtifactPath(request.primaryPreviewPath, 'Print root');
-  const artifacts = await scanArtifacts(workspaceRoot);
-  const build = (await discoverModelBuilds(workspaceRoot, artifacts)).find(
-    (candidate) =>
-      candidate.sourcePath === request.sourcePath &&
-      candidate.primaryPreviewPath === request.primaryPreviewPath,
-  );
-  if (!build) {
-    throw new ParameterBuildError(
-      'The selected artifact is not a recognized print root.',
-      409,
-    );
+  const { request, workspaceRoot } = options;
+  const binding = await readActiveDesignBinding(workspaceRoot);
+  if (!binding || binding.designPath !== request.designPath || binding.revision !== request.revision) {
+    throw new ParameterBuildError('The selected design changed; reload before rebuilding.', 409);
   }
-  build.artifactPaths.forEach((path) =>
-    safeGeneratedArtifactPath(path, 'Model artifact'),
-  );
-  safeGeneratedArtifactPath(build.reportPath, 'Build report');
-  const validated = await validateUnifiedBuildReport(workspaceRoot, join(workspaceRoot, build.reportPath));
-  if (!validated) throw new ParameterBuildError('Build evidence changed; reload before rebuilding.', 409);
-  const destinationRoot = dirname(validated.reportPath);
-  const stagedBuild = { ...build, reportPath: basename(build.reportPath) };
-  const sourcePath = join(workspaceRoot, request.sourcePath);
-  const source = await readFile(sourcePath, 'utf8');
-  if (sha256(source) !== request.sourceHash) {
-    throw new ParameterBuildError(
-      'Model source changed; reload parameters before rebuilding.',
-      409,
-    );
-  }
-  const rewrittenSource = await rewriteSource(
-    pythonExecutable,
-    source,
-    request.values,
-  );
-  const rewrittenSourceHash = sha256(rewrittenSource);
-  const buildsRoot = join(workspaceRoot, '.amagine-state', 'parameter-builds');
-  await mkdir(buildsRoot, { recursive: true });
-  const jobRoot = await mkdtemp(join(buildsRoot, 'job-'));
-  const outDir = join(jobRoot, 'out');
-  const backupDir = join(jobRoot, 'backup');
-  const stagedSourcePath = join(jobRoot, basename(request.sourcePath));
-  await mkdir(outDir, { recursive: true });
-  try {
-    await executeParameterBuild(
-      pythonExecutable,
-      sourcePath,
-      workspaceRoot,
-      outDir,
-      request.values,
-      validated.inputPaths.intent,
-    );
-    const candidatePaths = await requireCandidateFiles(outDir, stagedBuild, workspaceRoot);
-    const candidateReportPath = join(outDir, stagedBuild.reportPath);
-    await prepareCandidateReport(
-      candidateReportPath,
-      outDir,
-      workspaceRoot,
-      request.sourcePath,
-      rewrittenSourceHash,
-      request.values,
-      destinationRoot,
-    );
-    await writeFile(stagedSourcePath, rewrittenSource, 'utf8');
-    await promoteFiles(
-      [
-        ...candidatePaths.map((path) => ({
-          from: join(outDir, path),
-          to: join(destinationRoot, path),
-        })),
-        { from: stagedSourcePath, to: sourcePath },
-      ],
-      backupDir,
-      async () => {
-        if (!await validateUnifiedBuildReport(workspaceRoot, join(destinationRoot, stagedBuild.reportPath)))
-          throw new ParameterBuildError('Published parameter evidence did not verify; the previous files were restored.', 422);
-      },
-    );
-  } finally {
-    await rm(jobRoot, { force: true, recursive: true });
-  }
+  if (binding.intentStale) throw new ParameterBuildError('The active intent changed; refresh the project context before rebuilding.', 409);
+  if (!binding.intentPath) throw new ParameterBuildError('Parameter rebuild requires a hash-bound active intent.', 409);
+  const parameters = await readDesignParameters(workspaceRoot, binding.designPath, binding.revision);
+  const byId = new Map(parameters.map((parameter) => [parameter.id, parameter]));
+  const changes = Object.entries(request.values).map(([id, value]) => {
+    const parameter = byId.get(id);
+    if (!parameter) throw new ParameterBuildError(`Parameter ${id} is derived or unavailable.`, 400);
+    if (parameter.minimum !== undefined && value < parameter.minimum || parameter.maximum !== undefined && value > parameter.maximum ||
+      parameter.kind === 'integer' && !Number.isInteger(value)) {
+      throw new ParameterBuildError(`Parameter ${id} is outside its declared range or type.`, 400);
+    }
+    return { kind: 'update', target: `params.${id}`, set: { value } };
+  });
+  const applied = await agent(workspaceRoot, 'design', {
+    action: 'apply', design: binding.designPath, baseRevision: binding.revision, changes,
+  });
+  if (typeof applied.revision !== 'string') throw new ParameterBuildError('Design edit returned no revision.', 422);
+  await agent(workspaceRoot, 'build', {
+    phase: 'compile', design: binding.designPath, revision: applied.revision,
+    timeoutSeconds: 165,
+    intent: binding.intentPath,
+  });
 }

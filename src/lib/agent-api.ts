@@ -83,10 +83,9 @@ export async function rebuildModelParameters(
 ): Promise<ParameterBuildResult> {
   try {
     return await trpc.sessions.rebuildParameters.mutate({
-      primaryPreviewPath: model.primaryPreviewPath,
+      designPath: model.designPath,
+      revision: model.revision,
       sessionId,
-      sourceHash: model.sourceHash,
-      sourcePath: model.sourcePath,
       values,
     });
   } catch (error) {

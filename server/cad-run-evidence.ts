@@ -64,6 +64,65 @@ async function activeInput(root: string, state: Record<string, any>): Promise<Ac
   return intent.intentPath ? intent : undefined;
 }
 
+/** Resolve the explicitly active design pointer and its hash, plus a hash-bound intent if present. */
+export async function readActiveDesignBinding(workspace: string): Promise<{
+  designPath: string; revision: string; intentPath?: string; intentStale?: boolean;
+  buildStatus?: 'draft' | 'failed' | 'validated';
+} | undefined> {
+  try {
+    const root = await realpath(workspace);
+    const { state, records } = await runRecords(root);
+    const active = await activeInput(root, state);
+    if (active?.kind !== 'design' || !active.path) return undefined;
+    const designPath = await realpath(active.path);
+    const local = relative(root, designPath);
+    if (!local || isAbsolute(local) || local === '..' || local.startsWith(`..${sep}`)) return undefined;
+    const bytes = await readFile(designPath);
+    const revision = createHash('sha256').update(bytes).digest('hex');
+    let intentPath: string | undefined;
+    const activeIntent = state.activeIntent;
+    let activeIntentValid = false;
+    if (activeIntent?.path && activeIntent?.sha256) {
+      try {
+        const path = await realpath(resolve(root, activeIntent.path));
+        const intentLocal = relative(root, path);
+        if (intentLocal && !isAbsolute(intentLocal) && intentLocal !== '..' && !intentLocal.startsWith(`..${sep}`) &&
+            createHash('sha256').update(await readFile(path)).digest('hex') === activeIntent.sha256) {
+          intentPath = intentLocal.split(sep).join('/');
+          activeIntentValid = true;
+        }
+      } catch { /* A stale active intent is not a usable build input. */ }
+    }
+    let buildStatus: 'draft' | 'failed' | 'validated' | undefined;
+    for (const record of records) {
+      if (!record.report) continue;
+      try {
+        const reportPath = await realpath(resolve(root, record.report.path));
+        const reportLocal = relative(root, reportPath);
+        if (!reportLocal || isAbsolute(reportLocal) || reportLocal === '..' || reportLocal.startsWith(`..${sep}`) || (await stat(reportPath)).size > 2 * 1024 * 1024) continue;
+        const reportBytes = await readFile(reportPath);
+        if (createHash('sha256').update(reportBytes).digest('hex') !== record.report.sha256) continue;
+        const doc = JSON.parse(reportBytes.toString('utf8'));
+        if (!['evidence-cad-compile-result/v2', 'a3d-draft-result/v2'].includes(doc.schema) || typeof doc.runId !== 'string') continue;
+        const inputs = record.inputs ?? doc.taskInputBindings ?? doc.inputBindings ?? {};
+        const design = inputs.design;
+        if (!design || resolve(root, design.path) !== designPath || design.sha256 !== revision) continue;
+        buildStatus = doc.pass === true ? 'validated' : doc.status === 'draft' ? 'draft' : 'failed';
+        const intent = inputs.intent;
+        if (!activeIntent?.path && !intentPath && intent?.path && intent?.sha256) {
+          const path = await realpath(resolve(root, intent.path));
+          const intentLocal = relative(root, path);
+          if (intentLocal && !isAbsolute(intentLocal) && intentLocal !== '..' && !intentLocal.startsWith(`..${sep}`) &&
+              createHash('sha256').update(await readFile(path)).digest('hex') === intent.sha256) intentPath = intentLocal.split(sep).join('/');
+        }
+        break;
+      } catch { /* A malformed historical report cannot hide the current design. */ }
+    }
+    return { designPath: local.split(sep).join('/'), revision, ...(intentPath ? { intentPath } : {}),
+      ...(activeIntent?.path && !activeIntentValid ? { intentStale: true } : {}), ...(buildStatus ? { buildStatus } : {}) };
+  } catch { return undefined; }
+}
+
 function matchesActive(root: string, active: ActiveInput | undefined, inputs: Record<string, BoundFile>): boolean {
   return (!active?.kind || Boolean(inputs[active.kind] && resolve(root, inputs[active.kind]!.path) === active.path)) &&
     (!active?.intentPath || !inputs.intent || resolve(root, inputs.intent.path) === active.intentPath);
@@ -154,6 +213,7 @@ export async function readCadRunArtifacts(workspace: string): Promise<ArtifactSu
         const freshness = await Promise.allSettled(Object.values(inputs).map((ref) => bound(ref as { path: string; sha256: string })));
         const current = freshness.length > 0 && freshness.every((item) => item.status === 'fulfilled') &&
           matchesActive(root, active, inputs);
+        const intentPath = inputs.intent?.path ? relative(root, resolve(root, inputs.intent.path)).split(sep).join('/') : undefined;
         const revision = run.design?.revision ?? inputs.design?.sha256 ?? inputs.source?.sha256;
         const status = doc.pass === true ? 'validated' as const : doc.status === 'draft' ? 'draft' as const : 'failed' as const;
         // Old display failures wrote STEP before they could write artifact
@@ -236,7 +296,8 @@ export async function readCadRunArtifacts(workspace: string): Promise<ArtifactSu
           artifacts.set(local, { kind: legacyAttachment ? 'other' : image ? 'image' : 'model', name: local.split('/').at(-1)!, path: local,
             url: `/api/artifacts/file?path=${encodeURIComponent(local)}`, size: meta.size,
             modifiedAt: meta.mtime.toISOString(), primary: display || (step ? key === cadMasterKey : image ? ['preview', 'diagnosticPreview'].includes(key) : status === 'validated' && current), buildId: doc.runId,
-            ...(designId ? { designId } : {}), ...(modelId ? { modelId } : {}),
+            ...(designId ? { designId } : {}), ...(designPath && inputs.design ? { designPath } : {}),
+            ...(modelId ? { modelId } : {}),
             ...(step && !display && key !== cadMasterKey ? { partId: key.slice('step:'.length) } : {}),
             ...(platePrint ? { plateId: key.split(':')[1] } : {}),
             ...(doc.artifactStages?.manufacturing?.status ? { manufacturingStatus: doc.artifactStages.manufacturing.status } : {}),
