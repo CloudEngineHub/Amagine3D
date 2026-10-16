@@ -25,17 +25,37 @@ jobs:
           script: |
             const repo = context.repo;
             const definitions = [
-              ['status: discussion', 'd4c5f9', '等待讨论 / Discussing the problem or proposed approach'],
-              ['status: planned', '0052cc', '已列入计划 / Accepted and planned, not yet in progress'],
-              ['status: in-progress', '1d76db', '正在修改 / Implementation or fix in progress'],
               ['needs-info', 'fbca04', '等待提问者补充信息 / Awaiting information requested by a maintainer'],
-              ['no-stale', '0e8a16', '保留此议题 / Exempt from automatic stale handling'],
-              ['stale', 'eeeeee', '补充信息提醒已发出 / Inactivity reminder sent; awaiting follow-up'],
+              ['planned', '0052cc', '已列入计划 / Accepted and planned, not yet in progress'],
+              ['in-progress', '1d76db', '正在修改 / Implementation or fix in progress'],
             ];
-            const statuses = definitions.slice(0, 3).map(([name]) => name);
+            const statuses = definitions.map(([name]) => name);
+            const statusName = name => name?.replace(/^status: (planned|in-progress)$/, '$1');
             const existing = await github.paginate(github.rest.issues.listLabelsForRepo, {
               ...repo, per_page: 100,
             });
+
+            // Preserve assignments when removing the old status prefixes.
+            for (const name of ['planned', 'in-progress']) {
+              const legacy = `status: ${name}`;
+              const oldLabel = existing.find(label => label.name === legacy);
+              if (!oldLabel) continue;
+              if (existing.some(label => label.name === name)) {
+                // Also support a partially completed migration.
+                const issues = await github.paginate(github.rest.issues.listForRepo, {
+                  ...repo, state: 'all', labels: legacy, per_page: 100,
+                });
+                for (const issue of issues) {
+                  await github.rest.issues.addLabels({ ...repo, issue_number: issue.number, labels: [name] });
+                  await github.rest.issues.removeLabel({ ...repo, issue_number: issue.number, name: legacy });
+                }
+                await github.rest.issues.deleteLabel({ ...repo, name: legacy });
+              } else {
+                await github.rest.issues.updateLabel({ ...repo, name: legacy, new_name: name });
+                oldLabel.name = name;
+              }
+            }
+
             for (const [name, color, description] of definitions) {
               if (existing.some(label => label.name === name)) continue;
               try {
@@ -48,14 +68,15 @@ jobs:
               }
             }
 
-            // Retire the old default label after this workflow reaches main.
-            // Deleting the repository label also removes it from existing issues.
-            const retired = 'status: needs-triage';
-            if (context.ref === 'refs/heads/main' && existing.some(label => label.name === retired)) {
-              try {
-                await github.rest.issues.deleteLabel({ ...repo, name: retired });
-              } catch (error) {
-                if (error.status !== 404) throw error;
+            // The three statuses above replace the discussion/stale label layers.
+            if (context.ref === 'refs/heads/main') {
+              for (const name of ['status: needs-triage', 'status: discussion', 'stale', 'no-stale']) {
+                if (!existing.some(label => label.name === name)) continue;
+                try {
+                  await github.rest.issues.deleteLabel({ ...repo, name });
+                } catch (error) {
+                  if (error.status !== 404) throw error;
+                }
               }
             }
 
@@ -72,20 +93,15 @@ jobs:
                   ...repo, issue_number, per_page: 100,
                 });
                 const latest = events.filter(event =>
-                  event.event === 'labeled' && active.includes(event.label?.name)
+                  event.event === 'labeled' && active.includes(statusName(event.label?.name))
                 ).sort((a, b) => b.id - a.id)[0];
                 if (!latest) {
                   core.warning(`Cannot resolve multiple statuses on #${issue_number}; leaving labels unchanged.`);
                   return;
                 }
-                selected = latest.label.name;
+                selected = statusName(latest.label.name);
               }
               const remove = new Set(active.filter(name => name !== selected));
-              if (selected !== 'status: discussion') remove.add('needs-info');
-              if (selected !== 'status: discussion' || !names.has('needs-info') ||
-                  names.has('no-stale') || issue.milestone || issue.assignees.length > 0) {
-                remove.add('stale');
-              }
               for (const name of remove) {
                 if (!names.has(name)) continue;
                 try {

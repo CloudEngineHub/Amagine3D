@@ -12,28 +12,28 @@
 
 | 标签 | 含义 |
 | --- | --- |
-| `status: discussion` | 等待讨论问题或方案，尚未形成结论。 |
-| `status: planned` | 已接受并列入计划，尚未开始实施。 |
-| `status: in-progress` | 正在实现或修改。 |
+| `needs-info` | 维护者已回复，等待进一步信息或反馈。 |
+| `planned` | 已接受并列入计划，尚未开始实施。 |
+| `in-progress` | 正在实现或修改。 |
 
 **Issue status** 工作流不会给没有状态的新 issue、重新打开的 issue 添加默认
 状态标签。维护者添加新状态后，旧状态会自动移除；移除最后一个状态则回到无状态
 标签的待分类状态。手动运行此工作流，或将其修改合入 `main`，会创建缺失的标签，
 并按相同规则处理已有的未关闭 issue；机器人不会根据正文自行判断是否已承诺开发。
 
-只有 `status: discussion` 不会触发自动关闭。维护者明确要求提问者补充信息后，
-可额外添加 `needs-info`，收到足够信息后应移除它。离开讨论状态时，机器人会自动
-移除 `needs-info` 和 `stale`。
+**Close inactive issues** 工作流每天北京时间 10:17（UTC 02:17）检查一次，
+只处理带有 `needs-info` 的未关闭 issue。根据 GitHub 的 `updated_at` 判断，
+**连续 30 天无活动就关闭**。评论或其他更新会重新计时，同时**保留 `needs-info`**。
+准备进入下一步时，由维护者移除该标签或选择其他状态。不再添加单独的 `stale`
+标签，也没有提醒阶段或额外等待 14 天的阶段。
 
-**Stale issues** 工作流每天检查一次，只处理同时带有 `status: discussion` 和
-`needs-info` 的 issue：连续 30 天没有活动则提醒，再过 14 天仍无活动则关闭。
-评论或更新会重置闲置计时；关闭前恢复活动时，下次检查会移除已有的 `stale`
-标签。带有 `no-stale`、已分配负责人、已纳入里程碑，或带有已列入计划、正在修改
-状态的 issue 均豁免。没有状态标签的 issue 不符合处理条件，PR 不参与自动关闭。
+没有状态标签、带有 `planned` 或 `in-progress` 的 issue 均不处理。
+类型标签、负责人和里程碑不改变该规则；PR 不参与自动关闭。关闭前会重新读取
+issue，确认没有刚发生的活动或状态变化；自动关闭工作流不会增删状态标签。
 闲置关闭记为 `not_planned`，不表示问题已经修复；提问者仍可评论补充信息，
 并请维护者重新打开。
 
-**初始阶段仅试运行。** 仓库的 Actions 变量 `STALE_ISSUES_ENABLED` 不为 `true`
+沿用现有启用/预览开关。仓库的 Actions 变量 `STALE_ISSUES_ENABLED` 不为 `true`
 时，闲置检查只输出日志，不修改 issue 标签、不发评论、不关闭 issue。要启用每日
 实际处理，在 **Settings → Secrets and variables → Actions → Variables** 中
 将该变量设为 `true`。手动运行默认 `dry_run: true`，实际执行还需同时将

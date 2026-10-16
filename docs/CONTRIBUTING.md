@@ -14,9 +14,9 @@ awaits maintainer triage**, even if it already has type labels such as `bug`,
 
 | Label | Meaning |
 | --- | --- |
-| `status: discussion` | The problem or proposed approach is being discussed. |
-| `status: planned` | The work has been accepted and planned, but has not started. |
-| `status: in-progress` | Implementation or a fix is in progress. |
+| `needs-info` | A maintainer has replied and is awaiting further information or feedback. |
+| `planned` | The work has been accepted and planned, but has not started. |
+| `in-progress` | Implementation or a fix is in progress. |
 
 The **Issue status** workflow does not add a default status to new or reopened
 issues. When a maintainer applies another status, it replaces the previous one.
@@ -25,23 +25,22 @@ Running this workflow manually, or merging a change to it into `main`, creates
 missing labels and applies the same rules to all open issues; it does not infer
 a development commitment from the issue text.
 
-`status: discussion` alone never makes an issue eligible for automatic closure.
-After explicitly requesting information from the reporter, a maintainer can add
-`needs-info` alongside it. Remove `needs-info` when enough information is available.
-Moving out of discussion automatically removes `needs-info` and `stale`.
+The **Close inactive issues** workflow runs daily at 02:17 UTC and only considers
+open issues labeled `needs-info`. It closes an issue after **30 consecutive days
+without activity**, using GitHub's `updated_at` timestamp. Comments and other
+updates restart the timer while **keeping `needs-info`**. A maintainer can remove
+that label or select another status when the issue is ready for the next step.
+There is no separate stale label, reminder stage, or additional 14-day wait.
 
-The daily **Stale issues** workflow only considers issues with **both**
-`status: discussion` and `needs-info`. It reminds participants after 30 days of
-inactivity, then closes the issue after another 14 days without activity. A comment
-or update resets the inactivity timer; the next scan removes an existing stale
-label when activity resumes before closure. Issues with `no-stale`, an assignee,
-a milestone, or a protected status (planned or in progress) are exempt. Issues
-without a status are ineligible, and PRs are excluded.
+Issues without a status, or labeled `planned` or `in-progress`, are left alone.
+Type labels, assignees, and milestones do not change this rule. PRs are excluded.
+The workflow reads each eligible issue again before closing it to check for
+recent activity or a changed status, and never adds or removes status labels.
 An inactivity closure is recorded as `not_planned`, not as a completed fix;
 reporters can comment with more information and ask a maintainer to reopen the issue.
 
-**The initial rollout is a dry run.** Unless the repository Actions variable
-`STALE_ISSUES_ENABLED` is exactly `true`, stale scans only write logs and do not
+The workflow preserves the existing enable/preview switch. Unless the repository Actions variable
+`STALE_ISSUES_ENABLED` is exactly `true`, inactivity scans only write logs and do not
 change issue labels, post comments, or close issues. To enable daily live scans,
 set that variable in **Settings → Secrets and variables → Actions → Variables**.
 Manual runs default to `dry_run: true`; a live manual run requires both the variable

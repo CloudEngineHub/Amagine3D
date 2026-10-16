@@ -1,4 +1,4 @@
-name: Stale issues
+name: Close inactive issues
 
 on:
   schedule:
@@ -22,33 +22,48 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11.0.0
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          ISSUE_INACTIVITY_DRY_RUN: ${{ vars.STALE_ISSUES_ENABLED != 'true' || (github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
         with:
-          # Trial mode is the default, including scheduled runs.
-          debug-only: ${{ vars.STALE_ISSUES_ENABLED != 'true' || (github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
-          only-issue-labels: 'status: discussion,needs-info'
-          exempt-issue-labels: 'status: planned,status: in-progress,no-stale'
-          exempt-all-issue-assignees: true
-          exempt-all-issue-milestones: true
-          days-before-issue-stale: 30
-          days-before-issue-close: 14
-          stale-issue-label: stale
-          remove-issue-stale-when-updated: true
-          close-issue-reason: not_planned
-          stale-issue-message: |
-            A maintainer requested more information, and this issue has had no activity for 30 days.
-            Please provide the requested details or let us know if you need more time.
-            If there is no further activity for 14 days, this issue will be closed for now.
-
-            维护者此前请求补充信息，此议题已连续 30 天没有更新。
-            请补充所需信息，或告知我们你需要更多时间；若再过 14 天仍无更新，将暂时关闭此议题。
-          close-issue-message: |
-            Closing for now because there has been no further activity for 14 days after the reminder.
-            This does not mean the problem has been fixed. You can still comment with the requested
-            information and ask a maintainer to reopen the issue.
-
-            提醒发出后 14 天内仍未收到进一步更新，因此暂时关闭。关闭不代表问题已经修复。
-            你仍可在此补充所需信息，并请维护者重新打开议题。
-          days-before-pr-stale: -1
-          days-before-pr-close: -1
-          operations-per-run: 100
+          script: |
+            const repo = context.repo;
+            const dryRun = process.env.ISSUE_INACTIVITY_DRY_RUN !== 'false';
+            const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+            const isInactive = issue => {
+              const labels = new Set(issue.labels.map(label => label.name));
+              return !issue.pull_request && issue.state === 'open' &&
+                labels.has('needs-info') && !labels.has('planned') && !labels.has('in-progress') &&
+                Date.parse(issue.updated_at) <= cutoff;
+            };
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              ...repo, state: 'open', labels: 'needs-info', per_page: 100,
+            });
+            let closed = 0;
+            for (const candidate of issues) {
+              if (!isInactive(candidate)) continue;
+              // A reply or status change may have arrived since the list request.
+              const { data: issue } = await github.rest.issues.get({
+                ...repo, issue_number: candidate.number,
+              });
+              if (!isInactive(issue)) continue;
+              if (dryRun) {
+                core.info(`Would close #${issue.number}: no activity since ${issue.updated_at}.`);
+                continue;
+              }
+              await github.rest.issues.update({
+                ...repo, issue_number: issue.number, state: 'closed', state_reason: 'not_planned',
+              });
+              await github.rest.issues.createComment({
+                ...repo, issue_number: issue.number,
+                body: [
+                  'Closing because this issue is marked `needs-info` and has had no activity for 30 days.',
+                  'This does not mean the problem has been fixed. You can still provide more information and ask a maintainer to reopen it.',
+                  '',
+                  '此议题标记为 `needs-info`，且已连续 30 天无活动，因此暂时关闭。',
+                  '关闭不表示问题已经修复；你仍可补充信息，并请维护者重新打开。',
+                ].join('\n'),
+              });
+              closed += 1;
+            }
+            core.info(`${dryRun ? 'Preview' : 'Live'} scan complete; closed ${closed} issue(s).`);
